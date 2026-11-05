@@ -1,0 +1,23 @@
+{
+  "name": "sir-palaniyandavar-crm",
+  "version": "1.0.0",
+  "description": "Customer application tracking for Sir Palaniyandavar Info Tech",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "vite --config client/vite.config.js",
+    "build": "vite build --config client/vite.config.js",
+    "backup": "node backup-database.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@fontsource/hind-madurai": "^5.3.0",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.2.1",
+    "vite": "^8.3.6"
+  }
+}

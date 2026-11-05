@@ -1,32 +1,38 @@
 import { useEffect, useRef, useState } from 'react';
 import Dialog from './Dialog.jsx';
+import { t } from './i18n.js';
+import { showError } from './lib.js';
 
 const EMPTY = { name: '', applicationNo: '', whatsapp: '' };
 
 function validate(form, provider) {
   const errors = {};
   const label = provider?.numberLabel || 'Application number';
-  if (!provider) errors.type = 'Choose a service';
-  if (!form.name.trim()) errors.name = 'Customer name is required';
-  if (!form.applicationNo.trim()) errors.applicationNo = `${label} is required`;
-  else if (provider && !new RegExp(provider.pattern).test(form.applicationNo.trim().toUpperCase())) errors.applicationNo = `Enter a valid ${label.toLowerCase()}`;
+  if (!provider) errors.type = t('Choose a service');
+  if (!form.name.trim()) errors.name = t('Customer name is required');
+  if (!form.applicationNo.trim()) errors.applicationNo = `${t(label)}: ${t('required')}`;
+  else if (provider && !new RegExp(provider.pattern).test(form.applicationNo.trim().toUpperCase())) errors.applicationNo = `${t(label)}: ${t('not valid')}`;
   let d = form.whatsapp.replace(/\D/g, '');
   if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
   if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-  if (!d) errors.whatsapp = 'WhatsApp number is required';
-  else if (!/^[6-9]\d{9}$/.test(d)) errors.whatsapp = 'Enter a valid 10-digit mobile number';
+  if (!d) errors.whatsapp = t('WhatsApp number is required');
+  else if (!/^[6-9]\d{9}$/.test(d)) errors.whatsapp = t('Enter a valid 10-digit mobile number');
   return errors;
 }
 
-// Stays open after saving, so several customers can be entered in a row.
-export default function AddCustomer({ providers, initial, onSave, onClose }) {
-  const [type, setType] = useState(initial || providers[0]?.id || '');
-  const [form, setForm] = useState(EMPTY);
+// Adds customers, staying open so several can be entered in a row. With `customer`
+// it edits that one instead and closes after saving.
+export default function AddCustomer({ providers, initial, customer, onSave, onClose }) {
+  const [type, setType] = useState(customer?.type || initial || providers[0]?.id || '');
+  const [form, setForm] = useState(customer
+    ? { name: customer.name, applicationNo: customer.applicationNo, whatsapp: customer.whatsapp.slice(2) }
+    : EMPTY);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState('');
   const nameRef = useRef(null);
   const provider = providers.find(p => p.id === type);
+  const number = form.applicationNo.trim().toUpperCase();
 
   // The panel has opened by now, so the name box can take the cursor.
   useEffect(() => { nameRef.current.focus(); }, []);
@@ -45,11 +51,12 @@ export default function AddCustomer({ providers, initial, onSave, onClose }) {
     setSaving(true);
     try {
       await onSave({ type, ...form });
+      if (customer) return;
       setSaved(form.name.trim());
       setForm(EMPTY);
       nameRef.current.focus();
     } catch (err) {
-      setErrors({ form: err.message });
+      showError(err);
     }
     setSaving(false);
   }
@@ -63,20 +70,22 @@ export default function AddCustomer({ providers, initial, onSave, onClose }) {
   );
 
   return (
-    <Dialog title="Add customer" onClose={onClose}>
-      {saved && <p className="saved" role="status">Saved {saved}. Add the next customer, or close this panel.</p>}
+    <Dialog title={customer ? t('Edit customer') : t('Add customer')} onClose={onClose}>
+      {saved && <p className="saved" role="status">{t('Saved {name}. Add the next customer, or close this panel.', { name: saved })}</p>}
       <form onSubmit={submit} noValidate>
         <div className="field">
-          <label htmlFor="service">Service</label>
-          <select id="service" value={type} onChange={e => setType(e.target.value)}>
-            {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <label htmlFor="service">{t('Service')}</label>
+          <select id="service" value={type} disabled={!!customer} onChange={e => setType(e.target.value)}>
+            {providers.map(p => <option key={p.id} value={p.id}>{t(p.name)}</option>)}
           </select>
         </div>
-        {field('name', 'Customer name', { ref: nameRef })}
-        {field('applicationNo', provider?.numberLabel || 'Application number', { className: 'upper', placeholder: provider?.placeholder })}
-        {field('whatsapp', 'WhatsApp number', { type: 'tel', inputMode: 'numeric', placeholder: '10-digit mobile number' })}
-        {errors.form && <p className="field-error">{errors.form}</p>}
-        <button className="btn primary wide" disabled={saving}>{saving ? 'Saving…' : 'Save customer'}</button>
+        {field('name', t('Customer name'), { ref: nameRef })}
+        {field('applicationNo', t(provider?.numberLabel || 'Application number'), { className: 'upper', placeholder: t(provider?.placeholder || '') })}
+        {customer && number !== customer.applicationNo && customer.status && (
+          <p className="warn">{t('This is a new number, so the saved status will be cleared.')}</p>
+        )}
+        {field('whatsapp', t('WhatsApp number'), { type: 'tel', inputMode: 'numeric', placeholder: t('10-digit mobile number') })}
+        <button className="btn primary wide" disabled={saving}>{saving ? t('Saving…') : customer ? t('Save changes') : t('Save customer')}</button>
       </form>
     </Dialog>
   );

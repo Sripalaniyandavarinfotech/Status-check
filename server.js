@@ -9,6 +9,7 @@ const whatsapp = require('./lib/whatsapp');
 const db = require('./lib/db');
 const users = require('./lib/users');
 const customers = require('./lib/customers');
+const activity = require('./lib/activity');
 const mail = require('./lib/mail');
 
 const PORT = process.env.PORT || 3000;
@@ -21,18 +22,28 @@ function normalizeWhatsapp(s) {
   return /^91[6-9]\d{9}$/.test(d) ? d : null;
 }
 
+// An error the person can be told about, with the status code to answer with.
+const httpError = (status, message) => Object.assign(new Error(message), { status });
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
+    let tooBig = false;
     req.on('data', d => {
+      if (tooBig) return; // keep reading so the error can still be delivered
       data += d;
-      if (data.length > 1e6) req.destroy();
+      if (data.length > 1e6) {
+        tooBig = true;
+        data = '';
+        reject(httpError(413, 'That is too large to send'));
+      }
     });
     req.on('end', () => {
+      if (tooBig) return;
       try {
         resolve(data ? JSON.parse(data) : {});
       } catch {
-        reject(new Error('Invalid JSON'));
+        reject(httpError(400, 'The server could not read that request'));
       }
     });
     req.on('error', reject);
@@ -55,10 +66,19 @@ function setStatus(c, status, found) {
   c.status = status;
 }
 
+// A problem on the government website, not on this server.
+async function lookup(provider, number) {
+  try {
+    return await provider.lookup(number);
+  } catch (e) {
+    throw httpError(502, e.message || 'The government website did not answer');
+  }
+}
+
 async function refreshCustomer(c) {
   const provider = byId[c.type];
   if (!provider) throw new Error(`Unknown service type "${c.type}"`);
-  const r = await provider.lookup(c.applicationNo);
+  const r = await lookup(provider, c.applicationNo);
   setStatus(c, r.found ? r.status : r.message, r.found);
   c.service = r.title || c.service || '';
   c.remarks = r.remarks || '';
@@ -79,13 +99,14 @@ const wasSent = (c, status) => (c.notifications || []).some(n => n.ok && n.mode 
 
 // Looks up one customer, saves the result, and messages them on WhatsApp if the
 // status moved to a new stage.
-async function refreshAndSave(id) {
+async function refreshAndSave(id, actor) {
   const customer = await customers.find(id);
   if (!customer) return null;
   const before = customer.status;
   const wasChecked = !!customer.lastChecked;
   await refreshCustomer(customer);
   if (!await customers.saveStatus(customer)) return null; // deleted while checking
+  if (customer.status !== before) await activity.log({ actor, action: 'customer.status', owner: customer.owner, detail: `${customer.name} (${customer.applicationNo}): ${customer.status}` });
   // Not on the very first check (that's the starting point), and not for "not found".
   if (wasChecked && customer.found && customer.status !== before) await notifyCustomer(customer);
   return customer;
@@ -187,24 +208,37 @@ setInterval(async () => {
 
 // Every action here works only on the signed-in user's own customers.
 async function customersApi(req, res, url, user) {
-  const id = url.pathname.split('/')[3];
-  const action = url.pathname.split('/')[4];
+  const [, , , id, action, noteId] = url.pathname.split('/');
   const body = req.method === 'POST' ? await readBody(req) : {};
+  const label = c => `${c.name} (${c.applicationNo})`;
+  const record = (action, detail) => activity.log({ actor: user, action, owner: user.id, detail });
+  const box = url.searchParams.get('type');
+  const search = (url.searchParams.get('q') || '').trim().slice(0, 100);
 
-  if (req.method === 'GET' && !id) return send(res, 200, await customers.forOwner(user.id));
+  if (req.method === 'GET' && !id) {
+    return send(res, 200, await customers.page(user.id, { type: box, view: url.searchParams.get('view'), q: search, page: url.searchParams.get('page') }));
+  }
+  if (req.method === 'GET' && id === 'summary') return send(res, 200, await customers.summary(user.id, box, search));
+  if (req.method === 'GET' && id === 'export') return send(res, 200, await customers.exportBox(user.id, box));
 
-  if (req.method === 'POST' && !id) {
-    const provider = byId[body.type];
+  // Checks a customer's details, for adding and editing. Returns the cleaned values.
+  function details(type) {
+    const provider = byId[type];
     const name = String(body.name || '').trim();
     const applicationNo = String(body.applicationNo || '').trim().toUpperCase();
     const whatsappNo = normalizeWhatsapp(body.whatsapp);
-    if (!provider) return send(res, 400, { error: 'Choose a service type' });
-    if (!name) return send(res, 400, { error: 'Name is required' });
-    if (!isValidNumber(provider, applicationNo)) return send(res, 400, { error: `Enter a valid ${provider.numberLabel.toLowerCase()}` });
-    if (!whatsappNo) return send(res, 400, { error: 'Enter a valid 10-digit WhatsApp number' });
+    if (!provider) throw httpError(400, 'Choose a service type');
+    if (!name || name.length > 200) throw httpError(400, 'Name is required');
+    if (!isValidNumber(provider, applicationNo)) throw httpError(400, `Enter a valid ${provider.numberLabel.toLowerCase()}`);
+    if (!whatsappNo) throw httpError(400, 'Enter a valid 10-digit WhatsApp number');
+    return { name, applicationNo, whatsapp: whatsappNo, provider };
+  }
 
+  if (req.method === 'POST' && !id) {
+    const { name, applicationNo, whatsapp: whatsappNo, provider } = details(body.type);
     const customer = await customers.add({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), owner: user.id, type: provider.id, name, applicationNo, whatsapp: whatsappNo });
     if (!customer) return send(res, 409, { error: `${applicationNo} is already saved under ${provider.name}` });
+    await record('customer.add', label(customer));
     return send(res, 201, customer);
   }
 
@@ -212,7 +246,9 @@ async function customersApi(req, res, url, user) {
     if (sendingUpdates.has(user.id)) return send(res, 409, { error: 'Updates are already being sent' });
     sendingUpdates.add(user.id);
     try {
-      return send(res, 200, await sendWaitingUpdates(user.id));
+      const result = await sendWaitingUpdates(user.id);
+      await record('whatsapp.send', `${result.sent} sent, ${result.failed} failed`);
+      return send(res, 200, result);
     } finally {
       sendingUpdates.delete(user.id);
     }
@@ -223,13 +259,37 @@ async function customersApi(req, res, url, user) {
 
   if (req.method === 'DELETE' && !action) {
     await customers.remove(id, user.id);
+    await record('customer.delete', label(customer));
     return send(res, 200, { ok: true });
+  }
+
+  if (req.method === 'DELETE' && action === 'notes') {
+    const updated = await customers.removeNote(id, noteId);
+    await record('note.delete', label(customer));
+    return send(res, 200, updated);
+  }
+
+  if (req.method === 'POST' && action === 'edit') {
+    const { name, applicationNo, whatsapp: whatsappNo, provider } = details(customer.type);
+    const updated = await customers.edit(customer, { name, applicationNo, whatsapp: whatsappNo });
+    if (!updated) return send(res, 409, { error: `${applicationNo} is already saved under ${provider.name}` });
+    await record('customer.edit', label(updated));
+    return send(res, 200, updated);
+  }
+
+  if (req.method === 'POST' && action === 'notes') {
+    const note = String(body.body || '').trim();
+    if (!note || note.length > 1000) return send(res, 400, { error: 'Enter a note of up to 1000 characters' });
+    const updated = await customers.addNote(id, user.userId, note);
+    await record('note.add', label(customer));
+    return send(res, 200, updated);
   }
 
   // Re-send the current status on WhatsApp by hand.
   if (req.method === 'POST' && action === 'notify') {
     if (!customer.lastChecked || !customer.found) return send(res, 400, { error: 'Check the status first' });
     const rec = await notifyCustomer(customer);
+    await record('whatsapp.one', label(customer));
     return rec.ok ? send(res, 200, customer) : send(res, 502, { error: rec.error, customer });
   }
 
@@ -242,11 +302,12 @@ async function customersApi(req, res, url, user) {
     setStatus(customer, status, true);
     customer.notifyDue = isFinal(status) && !wasSent(customer, status);
     await customers.saveStatus(customer);
+    await record('customer.status', `${label(customer)}: ${status}`);
     return send(res, 200, customer);
   }
 
   if (req.method === 'POST' && action === 'refresh') {
-    const updated = await refreshAndSave(id);
+    const updated = await refreshAndSave(id, user);
     return updated ? send(res, 200, updated) : send(res, 404, { error: 'Customer not found' });
   }
 
@@ -268,6 +329,26 @@ function sessionCookie(token, maxAgeMs) {
 }
 
 const publicUser = u => ({ userId: u.userId, role: u.role });
+
+// The customer's own lookup. It needs no login, so it gives away as little as
+// possible: the same answer for a wrong number and a wrong WhatsApp number.
+async function publicStatus(req, res) {
+  const key = `status|${req.socket.remoteAddress}`;
+  if (users.limited(key, 20)) return send(res, 429, { error: 'Too many tries. Wait 10 minutes and try again.' });
+  users.countTry(key, 10 * 60 * 1000);
+  const body = await readBody(req);
+  const applicationNo = String(body.applicationNo || '').trim().toUpperCase().slice(0, 40);
+  const number = normalizeWhatsapp(body.whatsapp);
+  const found = applicationNo && number ? await customers.publicStatus(applicationNo, number) : null;
+  if (!found) return send(res, 200, { found: false });
+  return send(res, 200, {
+    found: true,
+    service: byId[found.type]?.name || found.type,
+    status: found.status,
+    stage: found.stage,
+    updated: found.updated,
+  });
+}
 
 async function authApi(req, res, url) {
   const action = url.pathname.split('/')[3];
@@ -297,6 +378,7 @@ async function authApi(req, res, url) {
     if (result.error) return send(res, result.code, { error: result.error });
     users.clearTries(key);
     res.setHeader('Set-Cookie', sessionCookie(await users.startSession(result.user.id), users.SESSION_MS));
+    await activity.log({ actor: result.user, action: 'login', owner: result.user.id });
     return send(res, 200, { user: publicUser(result.user) });
   }
 
@@ -321,6 +403,24 @@ async function authApi(req, res, url) {
     return result.error ? send(res, result.code || 400, { error: result.error }) : send(res, 200, { ok: true });
   }
 
+  // Changing your own password logs out your other devices, but not this one.
+  if (action === 'password') {
+    const user = await users.userForToken(sessionToken(req));
+    if (!user) return send(res, 401, { error: 'Please log in' });
+    const key = `password|${user.id}`;
+    if (users.limited(key, 5)) return send(res, 429, { error: 'Too many wrong tries. Wait 15 minutes and try again.' });
+    const body = await readBody(req);
+    const result = await users.changeOwnPassword(user.id, body.current, body.password);
+    if (result.error) {
+      if (result.error.includes('current')) users.countTry(key, 15 * 60 * 1000);
+      return send(res, result.code || 400, { error: result.error });
+    }
+    users.clearTries(key);
+    res.setHeader('Set-Cookie', sessionCookie(await users.startSession(user.id), users.SESSION_MS));
+    await activity.log({ actor: user, action: 'password.own', owner: user.id });
+    return send(res, 200, { ok: true });
+  }
+
   if (action === 'logout') {
     await users.endSession(sessionToken(req));
     res.setHeader('Set-Cookie', sessionCookie('', 0));
@@ -330,37 +430,107 @@ async function authApi(req, res, url) {
   send(res, 404, { error: 'Not found' });
 }
 
-async function adminApi(req, res, url) {
-  const [, , , , id, action] = url.pathname.split('/'); // /api/admin/users/<id>/<action>
+async function adminApi(req, res, url, admin) {
+  const [, , , section, id, action] = url.pathname.split('/'); // /api/admin/users/<id>/<action>
+  if (req.method === 'GET' && section === 'activity') return send(res, 200, await activity.forAdmin(Number(url.searchParams.get('page'))));
+  if (req.method === 'GET' && section === 'reports') return send(res, 200, await customers.adminReport());
+  if (section !== 'users') return send(res, 404, { error: 'Not found' });
   if (req.method === 'GET' && !id) return send(res, 200, await users.forAdmin());
   if (req.method !== 'POST') return send(res, 405, { error: 'Not allowed' });
   const body = await readBody(req);
+  const target = id ? await users.userIdOf(id) : String(body.userId || '').trim().toLowerCase();
   const result = !id ? await users.addUser(body)
     : action === 'password' ? await users.setPassword(id, body.password)
       : action === 'refuse' ? await users.refuse(id)
         : await users.changeStatus(id, action);
-  return result.error ? send(res, result.code || 400, { error: result.error }) : send(res, 200, { ok: true });
+  if (result.error) return send(res, result.code || 400, { error: result.error });
+  await activity.log({ actor: admin, action: `user.${id ? action : 'add'}`, target });
+  return send(res, 200, { ok: true });
 }
 
 // The React site from client/, built by `npm run build`.
 const PUBLIC = path.join(__dirname, 'dist');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 
-function serveStatic(res, pathname) {
-  if (['/', '/login', '/register', '/forgot', '/reset', '/admin'].includes(pathname)) pathname = '/index.html';
-  const file = path.join(PUBLIC, path.normalize(pathname));
-  if (!file.startsWith(PUBLIC + path.sep)) {
-    res.writeHead(403);
-    return res.end('Forbidden');
+const PAGES = {
+  400: ['Bad request', 'The address could not be understood. Please check it and try again.'],
+  403: ['Not allowed', 'You do not have permission to open this page.'],
+  404: ['Page not found', 'This page does not exist, or it may have moved.'],
+  405: ['Not allowed', 'This page cannot be used that way.'],
+  500: ['Something went wrong', 'The server hit a problem. Please try again in a moment.'],
+  503: ['Website not ready', 'The website is being updated. Please try again in a moment.'],
+};
+
+// A complete page on its own, so it still works if the website files are missing.
+function sendPage(res, code) {
+  const [title, message] = PAGES[code];
+  res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>${title} - Sir Palaniyandavar Info Tech</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:#f1f3f9;color:#171c33;font:400 16px/1.5 system-ui,sans-serif}
+header{background:#1b2559;color:#fff;padding:18px 24px;font-size:20px;font-weight:700}
+main{flex:1;display:grid;place-items:center;padding:24px 16px}
+section{width:min(440px,100%);background:#fff;border-radius:12px;padding:28px 24px;text-align:center;box-shadow:0 16px 44px -14px rgba(27,37,89,.45)}
+b{display:block;font-size:52px;line-height:1.1;color:#f5a800}
+h1{margin:8px 0;font-size:24px;line-height:1.2;color:#1b2559}
+p{margin:0 0 20px;color:#565d7c}
+a{display:inline-block;padding:11px 20px;border-radius:8px;background:#1b2559;color:#fff;font-weight:600;text-decoration:none}
+</style>
+</head>
+<body>
+<header>Sir Palaniyandavar Info Tech</header>
+<main><section><b>${code}</b><h1>${title}</h1><p>${message}</p><a href="/">Go to home page</a></section></main>
+</body>
+</html>
+`);
+}
+
+// Pages the React site handles; everything else must be a real file in dist.
+const SITE_PAGES = ['/', '/login', '/register', '/forgot', '/reset', '/status', '/activity', '/reports', '/admin', '/admin/activity', '/admin/reports'];
+
+function serveStatic(req, res, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD');
+    return sendPage(res, 405);
   }
+  const page = SITE_PAGES.includes(pathname);
+  const file = path.join(PUBLIC, page ? 'index.html' : path.normalize(pathname));
+  if (!file.startsWith(PUBLIC + path.sep)) return sendPage(res, 403);
   fs.readFile(file, (err, data) => {
-    if (err) {
-      res.writeHead(404);
-      return res.end('Not found');
-    }
+    if (err) return sendPage(res, !page ? 404 : err.code === 'ENOENT' ? 503 : 500); // a page's file missing means it isn't built
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
     res.end(data);
   });
+}
+
+// ---- For search engines: only the public pages ----
+function sitemap(res) {
+  const base = mail.appUrl();
+  const urls = ['/login', '/register', '/forgot', '/status'].map(p => `  <url><loc>${base}${p}</loc></url>`).join('\n');
+  res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
+  res.end(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls}
+</urlset>
+`);
+}
+
+function robots(res) {
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end(`User-agent: *
+Disallow: /api/
+Disallow: /admin
+Disallow: /reset
+
+Sitemap: ${mail.appUrl()}/sitemap.xml
+`);
 }
 
 // A write must come from this site's own pages.
@@ -375,22 +545,30 @@ function fromOtherSite(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  let url;
+  try {
+    url = new URL(req.url, 'http://localhost');
+  } catch {
+    return sendPage(res, 400); // an address that can't be read
+  }
 
   if (url.pathname.startsWith('/api/')) {
     try {
       if (fromOtherSite(req)) return send(res, 403, { error: 'Not allowed' });
       if (url.pathname.startsWith('/api/auth/')) return await authApi(req, res, url);
+      if (url.pathname === '/api/public/status' && req.method === 'POST') return await publicStatus(req, res);
 
       const user = await users.userForToken(sessionToken(req));
       if (!user) return send(res, 401, { error: 'Please log in' });
 
       if (url.pathname.startsWith('/api/admin/') || url.pathname === '/api/admin') {
-        return user.role === 'admin' ? await adminApi(req, res, url) : send(res, 403, { error: 'Admins only' });
+        return user.role === 'admin' ? await adminApi(req, res, url, user) : send(res, 403, { error: 'Admins only' });
       }
       if (user.role !== 'user') return send(res, 403, { error: 'The admin account has no customers' });
 
       if (url.pathname === '/api/providers') return send(res, 200, publicList());
+      if (url.pathname === '/api/activity') return send(res, 200, await activity.forUser(user.id, Number(url.searchParams.get('page'))));
+      if (url.pathname === '/api/reports') return send(res, 200, await customers.report(user.id));
 
       // /api/status?type=certificate&no=TN-...  (type defaults to certificate)
       if (url.pathname === '/api/status') {
@@ -398,12 +576,13 @@ const server = http.createServer(async (req, res) => {
         const appNo = (url.searchParams.get('no') || '').trim().toUpperCase();
         if (!provider) return send(res, 400, { error: 'Unknown service type' });
         if (!isValidNumber(provider, appNo)) return send(res, 400, { error: `Enter a valid ${provider.numberLabel.toLowerCase()}` });
-        return send(res, 200, await provider.lookup(appNo));
+        return send(res, 200, await lookup(provider, appNo));
       }
 
       if (url.pathname === '/api/schedule') {
         if (req.method === 'POST') {
           const started = !progress;
+          if (started) await activity.log({ actor: user, action: 'check.run', owner: user.id });
           if (started) runAllChecks('Manual', user.id).catch(e => console.error('[auto-check]', e.message));
           return send(res, started ? 202 : 409, started ? { ok: true } : { error: 'A check is already running' });
         }
@@ -414,10 +593,11 @@ const server = http.createServer(async (req, res) => {
 
       return send(res, 404, { error: 'Not found' });
     } catch (e) {
+      if (e.status) return res.headersSent ? undefined : send(res, e.status, { error: e.message }); // a mistake in the request, not a fault
       console.error(url.pathname, e.message);
-      // Database errors stay in the server log; the person just gets a plain message.
-      if (!res.headersSent) send(res, 502, { error: e.code ? 'The server could not finish that. Please try again.' : e.message });
-      return;
+      if (res.headersSent) return;
+      // Everything else is on our side. The detail stays in the server log.
+      return send(res, e.code ? 503 : 500, { error: e.code ? 'The database is not responding. Please try again in a moment.' : 'The server hit a problem. Please try again.' });
     }
   }
 
@@ -427,8 +607,14 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
-  serveStatic(res, url.pathname);
+  if (url.pathname === '/sitemap.xml') return sitemap(res);
+  if (url.pathname === '/robots.txt') return robots(res);
+
+  serveStatic(req, res, url.pathname);
 });
+
+// A mistake in one request must not stop the site for everyone.
+process.on('unhandledRejection', e => console.error('[unexpected]', e));
 
 db.setup().then(() => {
   server.listen(PORT, async () => {

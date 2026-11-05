@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
+import { t } from './i18n.js';
 
 // A native <dialog> in the middle of the screen: traps focus and closes on Esc.
-export default function Dialog({ title, onClose, children }) {
+export default function Dialog({ title, alert, onClose, children }) {
   const ref = useRef(null);
   useEffect(() => {
     const el = ref.current;
@@ -11,14 +12,14 @@ export default function Dialog({ title, onClose, children }) {
   return (
     <dialog
       ref={ref}
-      className="dialog"
+      className={alert ? 'dialog alert' : 'dialog'}
       onCancel={e => { e.preventDefault(); onClose(); }}
       onClick={e => { if (e.target === ref.current) onClose(); }}
     >
       <div className="dialog-body">
         <div className="dialog-head">
           <h2>{title}</h2>
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>×</button>
+          <button className="icon-btn" aria-label={t('Close')} onClick={onClose}>×</button>
         </div>
         {children}
       </div>

@@ -63,6 +63,30 @@ The CRM keeps only the enrolment or update request number. It refuses a plain
 - Suspending a user logs them out and stops their automatic checks. Nothing is
   deleted, and activating them brings everything back.
 
+## What's on each page
+
+- **Customers:** one box per service, 25 customers to a page. Open a customer to
+  edit them, add notes, or set a stage.
+- **Activity:** each user sees what they did. The admin sees who did what, but never
+  which customer.
+- **Reports:** counts by service and by month. The admin sees counts per user.
+- **`/status`:** customers check their own application with no login. They need both
+  their application number and WhatsApp number, and see only the service and status.
+- **தமிழ்:** the button at the top switches any page to Tamil and is remembered on
+  that browser. WhatsApp messages stay in English unless you add a Tamil template
+  (see WHATSAPP_SETUP.md).
+
+Automatic checks skip applications that are finished (approved, issued, delivered,
+completed, rejected or cancelled). **Check now** on a customer still works.
+
+## Errors and search engines
+
+- Addresses that don't exist, and other server problems, show a full error page.
+- Actions that fail show a popup in the middle of the screen. Mistakes in a form
+  show beside the box. Details stay in the server terminal, not on screen.
+- `/sitemap.xml` lists the public pages, and `/robots.txt` keeps search engines out
+  of the rest. Both use `APP_URL`.
+
 ## Forgotten passwords
 
 Reset links go out through [FormSubmit](https://formsubmit.co), from `lib/mail.js`.

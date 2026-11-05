@@ -2,14 +2,20 @@ import { useEffect, useState } from 'react';
 import Admin from './Admin.jsx';
 import App from './App.jsx';
 import { Forgot, Login, Register, Reset } from './Auth.jsx';
+import ErrorPage from './ErrorPage.jsx';
+import ErrorPopup from './ErrorPopup.jsx';
+import { t } from './i18n.js';
+import { ActivityPage, ReportsPage } from './Pages.jsx';
+import Status from './Status.jsx';
 import { api } from './lib.js';
 
 // Chooses the page by who is logged in. undefined = still finding out, null = nobody.
 export default function Root() {
   const [user, setUser] = useState(undefined);
+  const [down, setDown] = useState(null); // why the site can't start
 
   useEffect(() => {
-    api('auth/me').then(r => setUser(r.user)).catch(() => setUser(null));
+    api('auth/me').then(r => setUser(r.user)).catch(setDown);
     // The server said this session has ended, for example the user was suspended.
     const out = () => setUser(null);
     window.addEventListener('signed-out', out);
@@ -22,18 +28,30 @@ export default function Root() {
     setUser(null);
   }
 
+  if (down) return <ErrorPage code={down.status || t('Offline')} title={t("The site can't load right now")} message={t(down.message)} />;
   if (user === undefined) return null;
+  return <><Page user={user} setUser={setUser} logout={logout} /><ErrorPopup /></>;
+}
+
+function Page({ user, setUser, logout }) {
   const path = window.location.pathname;
   if (path === '/reset') return <Reset />;
+  if (path === '/status') return <Status />;
 
   // The admin has its own address, whoever else may be logged in on this browser.
-  if (path === '/admin' || user?.role === 'admin') {
+  if (path.startsWith('/admin') || user?.role === 'admin') {
     if (user?.role !== 'admin') return <Login admin onLogin={setUser} />;
-    if (path !== '/admin') window.history.replaceState(null, '', '/admin');
+    if (!path.startsWith('/admin')) window.history.replaceState(null, '', '/admin');
+    if (path === '/admin/activity') return <ActivityPage user={user} onLogout={logout} />;
+    if (path === '/admin/reports') return <ReportsPage user={user} onLogout={logout} />;
     return <Admin user={user} onLogout={logout} />;
   }
 
-  if (user) return <App user={user} onLogout={logout} />;
+  if (user) {
+    if (path === '/activity') return <ActivityPage user={user} onLogout={logout} />;
+    if (path === '/reports') return <ReportsPage user={user} onLogout={logout} />;
+    return <App user={user} onLogout={logout} />;
+  }
   if (path === '/register') return <Register />;
   if (path === '/forgot') return <Forgot />;
   return <Login onLogin={setUser} />;

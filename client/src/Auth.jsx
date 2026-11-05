@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { Field, PasswordField } from './Fields.jsx';
 import Header from './Header.jsx';
-import { api } from './lib.js';
+import { t } from './i18n.js';
+import { api, showError } from './lib.js';
 
 function Page({ title, children }) {
   return (
@@ -16,30 +18,6 @@ function Page({ title, children }) {
   );
 }
 
-export function Field({ id, label, error, ...props }) {
-  return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <input id={id} name={id} aria-invalid={!!error} {...props} />
-      {error && <p className="field-error">{error}</p>}
-    </div>
-  );
-}
-
-export function PasswordField({ id, label, error, ...props }) {
-  const [show, setShow] = useState(false);
-  return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <div className="pw">
-        <input id={id} name={id} type={show ? 'text' : 'password'} aria-invalid={!!error} {...props} />
-        <button type="button" aria-label={show ? `Hide ${label}` : `Show ${label}`} onClick={() => setShow(!show)}>{show ? 'Hide' : 'Show'}</button>
-      </div>
-      {error && <p className="field-error">{error}</p>}
-    </div>
-  );
-}
-
 export function Login({ admin, onLogin }) {
   const [form, setForm] = useState({ userId: '', password: '' });
   const [error, setError] = useState('');
@@ -48,7 +26,7 @@ export function Login({ admin, onLogin }) {
 
   async function submit(e) {
     e.preventDefault();
-    if (!form.userId.trim() || !form.password) return setError('Enter your user ID and password');
+    if (!form.userId.trim() || !form.password) return setError(t('Enter your user ID and password'));
     setBusy(true);
     setError('');
     try {
@@ -56,20 +34,21 @@ export function Login({ admin, onLogin }) {
       if (!admin) window.history.replaceState(null, '', '/');
       onLogin(user);
     } catch (err) {
-      setError(err.message);
+      showError(err, t('Could not log in'));
       setBusy(false);
     }
   }
 
   return (
-    <Page title={admin ? 'Admin log in' : 'Log in'}>
+    <Page title={admin ? t('Admin log in') : t('Log in')}>
       <form className="auth-card" onSubmit={submit} noValidate>
         {error && <p className="warn" role="alert">{error}</p>}
-        <Field id="userId" label="User ID" value={form.userId} onChange={change('userId')} autoComplete="username" autoCapitalize="none" autoFocus />
-        <PasswordField id="password" label="Password" value={form.password} onChange={change('password')} autoComplete="current-password" />
-        <button className="btn primary wide" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
-        {!admin && <p className="auth-switch"><a href="/forgot">Forgotten password?</a></p>}
-        {!admin && <p className="auth-switch">New here? <a href="/register">Register</a></p>}
+        <Field id="userId" label={t('User ID')} value={form.userId} onChange={change('userId')} autoComplete="username" autoCapitalize="none" autoFocus />
+        <PasswordField id="password" label={t('Password')} value={form.password} onChange={change('password')} autoComplete="current-password" />
+        <button className="btn primary wide" disabled={busy}>{busy ? t('Logging in…') : t('Log in')}</button>
+        {!admin && <p className="auth-switch"><a href="/forgot">{t('Forgotten password?')}</a></p>}
+        {!admin && <p className="auth-switch">{t('New here?')} <a href="/register">{t('Register')}</a></p>}
+        {!admin && <p className="auth-switch"><a href="/status">{t('Check your application')}</a></p>}
       </form>
     </Page>
   );
@@ -77,14 +56,14 @@ export function Login({ admin, onLogin }) {
 
 function validate(form) {
   const errors = {};
-  if (!/^[a-zA-Z0-9._-]{3,30}$/.test(form.userId.trim())) errors.userId = 'Use 3 to 30 letters or numbers, with no spaces';
-  if (form.password.length < 8) errors.password = 'Use at least 8 characters';
-  else if (form.password !== form.again) errors.again = 'The passwords do not match';
+  if (!/^[a-zA-Z0-9._-]{3,30}$/.test(form.userId.trim())) errors.userId = t('Use 3 to 30 letters or numbers, with no spaces');
+  if (form.password.length < 8) errors.password = t('Use at least 8 characters');
+  else if (form.password !== form.again) errors.again = t('The passwords do not match');
   let d = form.phone.replace(/\D/g, '');
   if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
   if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-  if (!/^[6-9]\d{9}$/.test(d)) errors.phone = 'Enter a valid 10-digit phone number';
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) errors.email = 'Enter a valid email address';
+  if (!/^[6-9]\d{9}$/.test(d)) errors.phone = t('Enter a valid 10-digit phone number');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) errors.email = t('Enter a valid email address');
   return errors;
 }
 
@@ -106,33 +85,32 @@ export function Register() {
       await api('auth/register', { method: 'POST', body });
       setDone(true);
     } catch (err) {
-      setErrors({ form: err.message });
+      showError(err);
     }
     setBusy(false);
   }
 
   if (done) {
     return (
-      <Page title="Registration sent">
+      <Page title={t('Registration sent')}>
         <div className="auth-card">
-          <p className="saved" role="status">You can log in as soon as the admin accepts your registration.</p>
-          <a className="btn primary wide center" href="/login">Go to log in</a>
+          <p className="saved" role="status">{t('You can log in as soon as the admin accepts your registration.')}</p>
+          <a className="btn primary wide center" href="/login">{t('Go to log in')}</a>
         </div>
       </Page>
     );
   }
 
   return (
-    <Page title="Register">
+    <Page title={t('Register')}>
       <form className="auth-card" onSubmit={submit} noValidate>
-        {errors.form && <p className="warn" role="alert">{errors.form}</p>}
-        <Field id="userId" label="User ID" error={errors.userId} value={form.userId} onChange={change('userId')} autoComplete="username" autoCapitalize="none" autoFocus />
-        <PasswordField id="password" label="Password" error={errors.password} value={form.password} onChange={change('password')} autoComplete="new-password" />
-        <PasswordField id="again" label="Password again" error={errors.again} value={form.again} onChange={change('again')} autoComplete="new-password" />
-        <Field id="phone" label="Phone number" type="tel" inputMode="numeric" error={errors.phone} value={form.phone} onChange={change('phone')} autoComplete="tel" />
-        <Field id="email" label="Email" type="email" error={errors.email} value={form.email} onChange={change('email')} autoComplete="email" />
-        <button className="btn primary wide" disabled={busy}>{busy ? 'Sending…' : 'Register'}</button>
-        <p className="auth-switch">Already registered? <a href="/login">Log in</a></p>
+        <Field id="userId" label={t('User ID')} error={errors.userId} value={form.userId} onChange={change('userId')} autoComplete="username" autoCapitalize="none" autoFocus />
+        <PasswordField id="password" label={t('Password')} error={errors.password} value={form.password} onChange={change('password')} autoComplete="new-password" />
+        <PasswordField id="again" label={t('Password again')} error={errors.again} value={form.again} onChange={change('again')} autoComplete="new-password" />
+        <Field id="phone" label={t('Phone number')} type="tel" inputMode="numeric" error={errors.phone} value={form.phone} onChange={change('phone')} autoComplete="tel" />
+        <Field id="email" label={t('Email')} type="email" error={errors.email} value={form.email} onChange={change('email')} autoComplete="email" />
+        <button className="btn primary wide" disabled={busy}>{busy ? t('Sending…') : t('Register')}</button>
+        <p className="auth-switch">{t('Already registered?')} <a href="/login">{t('Log in')}</a></p>
       </form>
     </Page>
   );
@@ -146,37 +124,37 @@ export function Forgot() {
 
   async function submit(e) {
     e.preventDefault();
-    if (!who.trim()) return setError('Enter your user ID or email');
+    if (!who.trim()) return setError(t('Enter your user ID or email'));
     setBusy(true);
     setError('');
     try {
       await api('auth/forgot', { method: 'POST', body: { userId: who } });
       setSent(true);
     } catch (err) {
-      setError(err.message);
+      showError(err);
     }
     setBusy(false);
   }
 
   if (sent) {
     return (
-      <Page title="Check your email">
+      <Page title={t('Check your email')}>
         <div className="auth-card">
-          <p className="saved" role="status">If this account has an email, a reset link is on its way. It works for 30 minutes.</p>
-          <p className="quiet">First time? FormSubmit sends an activation email first. Confirm it, wait 5 minutes, then ask for the link again.</p>
-          <a className="btn primary wide center" href="/login">Go to log in</a>
+          <p className="saved" role="status">{t('If this account has an email, a reset link is on its way. It works for 30 minutes.')}</p>
+          <p className="quiet">{t('First time? FormSubmit sends an activation email first. Confirm it, wait 5 minutes, then ask for the link again.')}</p>
+          <a className="btn primary wide center" href="/login">{t('Go to log in')}</a>
         </div>
       </Page>
     );
   }
 
   return (
-    <Page title="Forgotten password">
+    <Page title={t('Forgotten password')}>
       <form className="auth-card" onSubmit={submit} noValidate>
         {error && <p className="warn" role="alert">{error}</p>}
-        <Field id="who" label="User ID or email" value={who} onChange={e => setWho(e.target.value)} autoComplete="username" autoCapitalize="none" autoFocus />
-        <button className="btn primary wide" disabled={busy}>{busy ? 'Sending…' : 'Send reset link'}</button>
-        <p className="auth-switch"><a href="/login">Back to log in</a></p>
+        <Field id="who" label={t('User ID or email')} value={who} onChange={e => setWho(e.target.value)} autoComplete="username" autoCapitalize="none" autoFocus />
+        <button className="btn primary wide" disabled={busy}>{busy ? t('Sending…') : t('Send reset link')}</button>
+        <p className="auth-switch"><a href="/login">{t('Back to log in')}</a></p>
       </form>
     </Page>
   );
@@ -192,8 +170,8 @@ export function Reset() {
   async function submit(e) {
     e.preventDefault();
     const found = {};
-    if (form.password.length < 8) found.password = 'Use at least 8 characters';
-    else if (form.password !== form.again) found.again = 'The passwords do not match';
+    if (form.password.length < 8) found.password = t('Use at least 8 characters');
+    else if (form.password !== form.again) found.again = t('The passwords do not match');
     setErrors(found);
     if (Object.keys(found).length) return;
     setBusy(true);
@@ -201,29 +179,29 @@ export function Reset() {
       await api('auth/reset', { method: 'POST', body: { token, password: form.password } });
       setDone(true);
     } catch (err) {
-      setErrors({ form: err.message });
+      showError(err);
     }
     setBusy(false);
   }
 
   if (done) {
     return (
-      <Page title="Password changed">
+      <Page title={t('Password changed')}>
         <div className="auth-card">
-          <p className="saved" role="status">Your new password is ready.</p>
-          <a className="btn primary wide center" href="/login">Go to log in</a>
+          <p className="saved" role="status">{t('Your new password is ready.')}</p>
+          <a className="btn primary wide center" href="/login">{t('Go to log in')}</a>
         </div>
       </Page>
     );
   }
 
   return (
-    <Page title="Choose a new password">
+    <Page title={t('Choose a new password')}>
       <form className="auth-card" onSubmit={submit} noValidate>
-        {errors.form && <p className="warn" role="alert">{errors.form} <a href="/forgot">Forgotten password</a></p>}
-        <PasswordField id="password" label="New password" error={errors.password} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} autoComplete="new-password" autoFocus />
-        <PasswordField id="again" label="New password again" error={errors.again} value={form.again} onChange={e => setForm({ ...form, again: e.target.value })} autoComplete="new-password" />
-        <button className="btn primary wide" disabled={busy}>{busy ? 'Saving…' : 'Save new password'}</button>
+        <PasswordField id="password" label={t('New password')} error={errors.password} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} autoComplete="new-password" autoFocus />
+        <PasswordField id="again" label={t('New password again')} error={errors.again} value={form.again} onChange={e => setForm({ ...form, again: e.target.value })} autoComplete="new-password" />
+        <button className="btn primary wide" disabled={busy}>{busy ? t('Saving…') : t('Save new password')}</button>
+        <p className="auth-switch">{t('Link not working?')} <a href="/forgot">{t('Ask for a new one')}</a></p>
       </form>
     </Page>
   );

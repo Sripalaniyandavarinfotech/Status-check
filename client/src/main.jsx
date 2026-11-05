@@ -4,6 +4,7 @@ import '@fontsource/hind-madurai/500.css';
 import '@fontsource/hind-madurai/600.css';
 import '@fontsource/hind-madurai/700.css';
 import './styles.css';
+import { ErrorBoundary } from './ErrorPage.jsx';
 import Root from './Root.jsx';
 
-createRoot(document.getElementById('root')).render(<Root />);
+createRoot(document.getElementById('root')).render(<ErrorBoundary><Root /></ErrorBoundary>);

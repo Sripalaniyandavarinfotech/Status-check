@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AddCustomer from './AddCustomer.jsx';
 import CustomerRow from './CustomerRow.jsx';
 import Dialog from './Dialog.jsx';
+import { Pager } from './Fields.jsx';
 import Header from './Header.jsx';
-import { api, downloadCsv, kind, plural, when } from './lib.js';
+import { plural, t } from './i18n.js';
+import { api, downloadCsv, kind, showError, when } from './lib.js';
 
 const VIEWS = [
-  { id: 'all', label: 'All', test: () => true },
-  { id: 'waiting', label: 'Waiting to send', test: c => c.notifyDue },
-  { id: 'progress', label: 'In progress', test: c => kind(c) === '' },
-  { id: 'approved', label: 'Approved', test: c => kind(c) === 'ok' },
-  { id: 'rejected', label: 'Rejected', test: c => kind(c) === 'bad' },
-  { id: 'new', label: 'No status yet', test: c => kind(c) === 'none' },
+  { id: 'all', label: 'All' },
+  { id: 'waiting', label: 'Waiting to send' },
+  { id: 'progress', label: 'In progress' },
+  { id: 'approved', label: 'Approved' },
+  { id: 'rejected', label: 'Rejected' },
+  { id: 'new', label: 'No status yet' },
 ];
 
 const WHATSAPP_NOTE = {
@@ -20,62 +22,94 @@ const WHATSAPP_NOTE = {
   off: 'WhatsApp updates off',
 };
 
-function headline(customers, waiting, inProgress) {
-  if (!customers.length) return 'Add your first customer to start tracking';
-  if (waiting) return `${plural(waiting, 'customer')} waiting for a WhatsApp update`;
-  if (inProgress) return `${plural(inProgress, 'application')} in progress`;
-  return `${plural(customers.length, 'application')} on file, none in progress`;
+function headline(s) {
+  if (!s.total) return t('Add your first customer to start tracking');
+  if (s.due) return t('{customers} waiting for a WhatsApp update', { customers: plural(s.due, 'customer') });
+  if (s.progress) return t('{applications} in progress', { applications: plural(s.progress, 'application') });
+  return t('{applications} on file, none in progress', { applications: plural(s.total, 'application') });
 }
 
 export default function App({ user, onLogout }) {
-  const [customers, setCustomers] = useState(null);
+  const [list, setList] = useState(null); // the open page of customers
+  const [summary, setSummary] = useState(null); // the counts around it
   const [providers, setProviders] = useState([]);
   const [schedule, setSchedule] = useState(null);
   const [offline, setOffline] = useState(false);
   const [view, setView] = useState('all');
   const [service, setService] = useState('');
+  const [page, setPage] = useState(1);
   const [query, setQuery] = useState('');
+  const [search, setSearch] = useState(''); // `query` once typing has paused
+  const [reload, setReload] = useState(0);
   const [openId, setOpenId] = useState(null);
-  const [dialog, setDialog] = useState(null); // { kind: 'add' | 'send' | 'delete' | 'notify', customer? }
+  const [dialog, setDialog] = useState(null); // { kind: 'add' | 'edit' | 'send' | 'delete' | 'notify', customer? }
   const [toasts, setToasts] = useState([]);
   const [thudId, setThudId] = useState(null);
   const [checking, setChecking] = useState(null);
   const [sending, setSending] = useState(false);
   const searchRef = useRef(null);
+  const latest = useRef(0);
 
-  const toast = useCallback((text, { tone = '', action } = {}) => {
+  const box = service || providers[0]?.id; // the service box that is open
+  const boxProvider = providers.find(p => p.id === box);
+  const providerOf = c => providers.find(p => p.id === c.type);
+  const refresh = useCallback(() => setReload(n => n + 1), []);
+
+  const toast = useCallback((text, { action } = {}) => {
     const id = Math.random();
-    setToasts(t => [...t, { id, text, tone, action }].slice(-2));
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), action ? 7000 : 4500);
+    setToasts(l => [...l, { id, text, action }].slice(-2));
+    setTimeout(() => setToasts(l => l.filter(x => x.id !== id)), action ? 7000 : 4500);
   }, []);
 
-  const replace = c => setCustomers(list => list.map(x => (x.id === c.id ? c : x)));
+  // Shows a saved change at once; the counts follow.
+  const replace = c => {
+    setList(l => l && { ...l, items: l.items.map(x => (x.id === c.id ? c : x)) });
+    refresh();
+  };
 
-  const loadCustomers = useCallback(async () => setCustomers(await api('customers')), []);
-  const loadSchedule = useCallback(async () => {
-    const s = await api('schedule');
-    setSchedule(s);
-    return s;
-  }, []);
+  const loadSchedule = useCallback(async () => setSchedule(await api('schedule')), []);
 
   useEffect(() => {
-    Promise.all([api('providers').then(setProviders), loadCustomers(), loadSchedule()]).catch(() => setOffline(true));
-  }, [loadCustomers, loadSchedule]);
+    Promise.all([api('providers').then(setProviders), loadSchedule()]).catch(() => setOffline(true));
+  }, [loadSchedule]);
+
+  // Waits for a pause in typing before searching.
+  useEffect(() => {
+    const timer = setTimeout(() => { setSearch(query.trim()); setPage(1); }, 250);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  // Only the newest answer is used, in case an older one arrives late.
+  useEffect(() => {
+    if (!box) return;
+    const ask = ++latest.current;
+    const q = encodeURIComponent(search);
+    const type = encodeURIComponent(box);
+    Promise.all([api(`customers?type=${type}&view=${view}&q=${q}&page=${page}`), api(`customers/summary?type=${type}&q=${q}`)])
+      .then(([l, s]) => {
+        if (ask !== latest.current) return;
+        setList(l);
+        setSummary(s);
+        setOffline(false);
+      })
+      .catch(() => { if (ask === latest.current) setOffline(true); });
+  }, [box, view, search, page, reload]);
 
   // Follow a running check closely; otherwise look for scheduled runs once a minute.
   const running = !!schedule?.running;
   useEffect(() => {
-    const tick = () => Promise.all([loadSchedule(), running ? loadCustomers() : null])
-      .then(() => setOffline(false))
-      .catch(() => setOffline(true));
+    const tick = () => {
+      loadSchedule().then(() => setOffline(false)).catch(() => setOffline(true));
+      if (running) refresh();
+    };
     const timer = setInterval(tick, running ? 3000 : 60000);
-    return () => { clearInterval(timer); if (running) loadCustomers().catch(() => {}); };
-  }, [running, loadCustomers, loadSchedule]);
+    return () => { clearInterval(timer); if (running) refresh(); };
+  }, [running, loadSchedule, refresh]);
 
   // Press / to jump to the search box.
   useEffect(() => {
     const onKey = e => {
-      if (e.key === '/' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName) && !document.querySelector('dialog[open]')) {
+      if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && !document.querySelector('dialog[open]')) {
         e.preventDefault();
         searchRef.current?.focus();
       }
@@ -84,22 +118,8 @@ export default function App({ user, onLogout }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const providerOf = c => providers.find(p => p.id === c.type);
-  const all = useMemo(() => customers || [], [customers]);
-  const waiting = all.filter(c => c.notifyDue);
-  const box = service || providers[0]?.id; // the service box that is open
-  const boxProvider = providers.find(p => p.id === box);
-  const inBox = useMemo(() => all.filter(c => c.type === box), [all, box]);
-  const counts = Object.fromEntries(VIEWS.map(v => [v.id, inBox.filter(v.test).length]));
-  const matches = useCallback(c => {
-    const q = query.trim().toLowerCase();
-    return !q || [c.name, c.applicationNo, c.whatsapp].some(v => v.toLowerCase().includes(q));
-  }, [query]);
-
-  const shown = useMemo(() => {
-    const test = VIEWS.find(v => v.id === view).test;
-    return inBox.filter(c => test(c) && matches(c));
-  }, [inBox, view, matches]);
+  const openBox = id => { setService(id); setView('all'); setPage(1); };
+  const openView = id => { setView(id); setPage(1); };
 
   async function setStage(c, status) {
     if (status === c.status) return;
@@ -111,9 +131,9 @@ export default function App({ user, onLogout }) {
         setThudId(c.id);
         setTimeout(() => setThudId(id => (id === c.id ? null : id)), 500);
       }
-      toast(`${c.name}: ${status}`, previous ? { action: { label: 'Undo', run: () => setStage(updated, previous) } } : {});
+      toast(`${c.name}: ${t(status)}`, previous ? { action: { label: t('Undo'), run: () => setStage(updated, previous) } } : {});
     } catch (e) {
-      toast(e.message, { tone: 'bad' });
+      showError(e);
     }
   }
 
@@ -121,7 +141,7 @@ export default function App({ user, onLogout }) {
   function openSite(c) {
     window.open(providerOf(c).officialUrl, '_blank', 'noopener');
     navigator.clipboard?.writeText(c.applicationNo)
-      .then(() => toast(`${c.applicationNo} copied. Paste it on the website.`))
+      .then(() => toast(t('{number} copied. Paste it on the website.', { number: c.applicationNo })))
       .catch(() => {});
   }
 
@@ -130,20 +150,46 @@ export default function App({ user, onLogout }) {
     try {
       const updated = await api(`customers/${c.id}/refresh`, { method: 'POST' });
       replace(updated);
-      toast(`${c.name}: ${updated.status}`);
+      toast(`${c.name}: ${t(updated.status)}`);
     } catch (e) {
-      toast(`Check failed for ${c.name}: ${e.message}`, { tone: 'bad' });
+      showError(e, t('Check failed for {name}', { name: c.name }));
     }
     setChecking(null);
   }
 
   async function addCustomer(form) {
     const saved = await api('customers', { method: 'POST', body: form });
-    setCustomers(list => [saved, ...list]);
     setService(saved.type); // show the box the new customer went into
-    const p = providerOf(saved);
-    toast(`Saved ${saved.name}`);
-    if (p?.ready) check(saved);
+    setView('all');
+    setPage(1);
+    refresh();
+    toast(t('Saved {name}', { name: saved.name }));
+    if (providerOf(saved)?.ready) check(saved);
+  }
+
+  async function editCustomer(c, form) {
+    const updated = await api(`customers/${c.id}/edit`, { method: 'POST', body: form });
+    replace(updated);
+    setDialog(null);
+    toast(t('Saved {name}', { name: updated.name }));
+  }
+
+  async function addNote(c, body) {
+    try {
+      replace(await api(`customers/${c.id}/notes`, { method: 'POST', body: { body } }));
+      return true;
+    } catch (e) {
+      showError(e);
+      return false;
+    }
+  }
+
+  async function removeNote(c, noteId) {
+    try {
+      replace(await api(`customers/${c.id}/notes/${noteId}`, { method: 'DELETE' }));
+    } catch (e) {
+      showError(e);
+    }
   }
 
   async function notify(c) {
@@ -151,31 +197,35 @@ export default function App({ user, onLogout }) {
     try {
       const updated = await api(`customers/${c.id}/notify`, { method: 'POST' });
       replace(updated);
-      toast(updated.notifications[0].mode === 'test' ? `Nothing sent to ${c.name}: WhatsApp isn't connected yet` : `Update sent to ${c.name}`);
+      toast(updated.notifications[0].mode === 'test' ? t("Nothing sent to {name}: WhatsApp isn't connected yet", { name: c.name }) : t('Update sent to {name}', { name: c.name }));
     } catch (e) {
       if (e.data?.customer) replace(e.data.customer);
-      toast(`Update failed for ${c.name}: ${e.message}`, { tone: 'bad' });
+      showError(e, t('Update failed for {name}', { name: c.name }));
     }
   }
 
   async function remove(c) {
     setDialog(null);
-    await api(`customers/${c.id}`, { method: 'DELETE' });
-    setCustomers(list => list.filter(x => x.id !== c.id));
-    toast(`Deleted ${c.name}`);
+    try {
+      await api(`customers/${c.id}`, { method: 'DELETE' });
+      refresh();
+      toast(t('Deleted {name}', { name: c.name }));
+    } catch (e) {
+      showError(e);
+    }
   }
 
   async function sendAll() {
     setSending(true);
     try {
       const r = await api('customers/send-updates', { method: 'POST' });
-      await loadCustomers();
+      refresh();
       setDialog(null);
-      if (r.test) toast(`Nothing sent: WhatsApp isn't connected yet. ${plural(r.test, 'customer')} still waiting.`, { tone: 'bad' });
-      else if (r.failed) toast(`${r.sent} sent, ${r.failed} failed: ${r.error}. Failed customers are still waiting.`, { tone: 'bad' });
-      else toast(`WhatsApp update sent to ${plural(r.sent, 'customer')}`);
+      if (r.test) showError({ message: t("WhatsApp isn't connected yet. {customers} still waiting.", { customers: plural(r.test, 'customer') }) }, t('Nothing sent'));
+      else if (r.failed) showError({ message: t('{sent} sent, {failed} failed: {error}. Failed customers are still waiting.', { sent: r.sent, failed: r.failed, error: t(r.error) }) }, t('Some messages failed'));
+      else toast(t('WhatsApp update sent to {customers}', { customers: plural(r.sent, 'customer') }));
     } catch (e) {
-      toast(e.message, { tone: 'bad' });
+      showError(e);
     }
     setSending(false);
   }
@@ -185,46 +235,56 @@ export default function App({ user, onLogout }) {
       await api('schedule', { method: 'POST' });
       await loadSchedule();
     } catch (e) {
-      toast(e.message, { tone: 'bad' });
+      showError(e);
+    }
+  }
+
+  async function download() {
+    try {
+      downloadCsv(await api(`customers/export?type=${encodeURIComponent(box)}`), providers, `${boxProvider.shortName}-customers.csv`);
+    } catch (e) {
+      showError(e);
     }
   }
 
   const r = schedule?.lastRun;
   const progress = schedule?.running;
+  const waiting = summary?.waiting || [];
+  const boxInfo = id => summary?.boxes.find(b => b.type === id) || { total: 0, due: 0, matches: 0 };
+  const open = boxInfo(box);
 
   return (
     <>
       <Header user={user} onLogout={onLogout}>
-        {schedule && <span className={`link-state ${schedule.whatsapp}`}>{WHATSAPP_NOTE[schedule.whatsapp]}</span>}
+        {schedule && <span className={`link-state ${schedule.whatsapp}`}>{t(WHATSAPP_NOTE[schedule.whatsapp])}</span>}
       </Header>
 
       <main className="wrap">
-        {offline && <p className="offline" role="alert">The CRM server isn't responding. Check that node server.js is running in your terminal.</p>}
+        {offline && <p className="offline" role="alert">{t("The CRM server isn't responding. Check that node server.js is running in your terminal.")}</p>}
 
         <section className="lead">
-          <h1>{customers ? headline(all, waiting.length, all.filter(c => kind(c) === '').length) : 'Loading customers…'}</h1>
-          <button className="btn primary" onClick={() => setDialog({ kind: 'add' })} disabled={!providers.length}>Add customer</button>
+          <h1>{summary ? headline(summary) : t('Loading customers…')}</h1>
+          <button className="btn primary" onClick={() => setDialog({ kind: 'add' })} disabled={!providers.length}>{t('Add customer')}</button>
         </section>
 
-        <nav className="boxes" aria-label="Choose a service">
+        <nav className="boxes" aria-label={t('Choose a service')}>
           {providers.map(p => {
-            const list = all.filter(c => c.type === p.id);
-            const due = list.filter(c => c.notifyDue).length;
+            const info = boxInfo(p.id);
             return (
-              <button key={p.id} className={p.id === box ? 'on' : ''} aria-pressed={p.id === box} onClick={() => setService(p.id)}>
-                <span className="box-name">{p.shortName}</span>
-                <b>{list.filter(matches).length}</b>
-                <span className="box-note">{due ? `${due} waiting to send` : plural(list.length, 'application')}</span>
+              <button key={p.id} className={p.id === box ? 'on' : ''} aria-pressed={p.id === box} onClick={() => openBox(p.id)}>
+                <span className="box-name">{t(p.shortName)}</span>
+                <b>{info.matches}</b>
+                <span className="box-note">{info.due ? t('{n} waiting to send', { n: info.due }) : plural(info.total, 'application')}</span>
               </button>
             );
           })}
         </nav>
 
-        <nav className="views" aria-label="Filter by status">
+        <nav className="views" aria-label={t('Filter by status')}>
           {VIEWS.map(v => (
-            <button key={v.id} className={view === v.id ? 'on' : ''} aria-pressed={view === v.id} onClick={() => setView(v.id)}>
-              <b>{counts[v.id]}</b>
-              {v.label}
+            <button key={v.id} className={view === v.id ? 'on' : ''} aria-pressed={view === v.id} onClick={() => openView(v.id)}>
+              <b>{summary?.views[v.id] ?? 0}</b>
+              {t(v.label)}
             </button>
           ))}
         </nav>
@@ -233,105 +293,114 @@ export default function App({ user, onLogout }) {
           <section className="auto">
             <div>
               {progress
-                ? <strong>Checking certificates: {progress.done} of {progress.total}</strong>
-                : <strong>Next certificate check: {schedule.nextRun}</strong>}
+                ? <strong>{t('Checking certificates: {done} of {total}', progress)}</strong>
+                : <strong>{t('Next certificate check: {when}', { when: t(schedule.nextRun) })}</strong>}
               <p className="quiet">
-                {r ? `Last run ${when(r.finishedAt)}: ${r.checked} checked, ${r.changed.length} changed${r.failed ? `, ${r.failed} failed` : ''}.` : 'No check has run yet.'}
-                {' '}Runs at {schedule.times.join(', ')} while the server is on.
+                {r ? t('Last run {when}: {checked} checked, {changed} changed, {failed} failed.', { when: when(r.finishedAt), checked: r.checked, changed: r.changed.length, failed: r.failed }) : t('No check has run yet.')}
+                {' '}{t('Runs at {times} while the server is on. Finished applications are not checked again.', { times: schedule.times.join(', ') })}
               </p>
-              {progress && <progress max={progress.total || 1} value={progress.done} aria-label="Check progress" />}
+              {progress && <progress max={progress.total || 1} value={progress.done} aria-label={t('Check progress')} />}
             </div>
-            <button className="btn" disabled={!!progress} onClick={runCheck}>{progress ? 'Running…' : 'Run check now'}</button>
+            <button className="btn" disabled={!!progress} onClick={runCheck}>{progress ? t('Running…') : t('Run check now')}</button>
           </section>
         )}
 
         <div className="tools">
-          <input ref={searchRef} className="search" type="search" aria-label="Search customers" placeholder="Search name or number (press /)" value={query} onChange={e => setQuery(e.target.value)} />
-          <button className="btn" disabled={!inBox.length} onClick={() => downloadCsv(inBox, providers, `${boxProvider.shortName}-customers.csv`)}>Download CSV</button>
+          <input ref={searchRef} className="search" type="search" aria-label={t('Search customers')} placeholder={t('Search name or number (press /)')} value={query} onChange={e => setQuery(e.target.value)} />
+          <button className="btn" disabled={!open.total} onClick={download}>{t('Download CSV')}</button>
         </div>
 
-        {customers && (shown.length ? (
-          <ul className="rows">
-            {shown.map(c => (
-              <CustomerRow
-                key={c.id}
-                c={c}
-                provider={providerOf(c)}
-                open={openId === c.id}
-                thud={thudId === c.id}
-                busy={checking === c.id}
-                onToggle={() => setOpenId(openId === c.id ? null : c.id)}
-                onStage={setStage}
-                onOpenSite={openSite}
-                onCheck={check}
-                onNotify={x => setDialog({ kind: 'notify', customer: x })}
-                onDelete={x => setDialog({ kind: 'delete', customer: x })}
-              />
-            ))}
-          </ul>
+        {list && (list.items.length ? (
+          <>
+            <ul className="rows">
+              {list.items.map(c => (
+                <CustomerRow
+                  key={c.id}
+                  c={c}
+                  provider={providerOf(c)}
+                  open={openId === c.id}
+                  thud={thudId === c.id}
+                  busy={checking === c.id}
+                  onToggle={() => setOpenId(openId === c.id ? null : c.id)}
+                  onStage={setStage}
+                  onOpenSite={openSite}
+                  onCheck={check}
+                  onNotify={x => setDialog({ kind: 'notify', customer: x })}
+                  onEdit={x => setDialog({ kind: 'edit', customer: x })}
+                  onDelete={x => setDialog({ kind: 'delete', customer: x })}
+                  onAddNote={addNote}
+                  onRemoveNote={removeNote}
+                />
+              ))}
+            </ul>
+            <Pager page={list.page} pages={list.pages} onPage={p => { setPage(p); window.scrollTo(0, 0); }} />
+          </>
         ) : (
           <div className="empty">
-            {inBox.length
-              ? <p>No customers match this filter.</p>
-              : <p>{boxProvider?.shortName} customers appear here with their application status.</p>}
+            {open.total
+              ? <p>{t('No customers match this filter.')}</p>
+              : <p>{t('{service} customers appear here with their application status.', { service: t(boxProvider?.shortName) })}</p>}
           </div>
         ))}
       </main>
 
-      {waiting.length > 0 && (
+      {summary?.due > 0 && (
         <div className="send-bar">
           <div className="wrap send-in">
-            <span>{plural(waiting.length, 'customer')} approved or rejected</span>
-            <button className="btn ink" onClick={() => setDialog({ kind: 'send' })}>Review and send WhatsApp</button>
+            <span>{t('{customers} approved or rejected', { customers: plural(summary.due, 'customer') })}</span>
+            <button className="btn ink" onClick={() => setDialog({ kind: 'send' })}>{t('Review and send WhatsApp')}</button>
           </div>
         </div>
       )}
 
       {dialog?.kind === 'add' && <AddCustomer providers={providers} initial={box} onSave={addCustomer} onClose={() => setDialog(null)} />}
 
+      {dialog?.kind === 'edit' && <AddCustomer providers={providers} customer={dialog.customer} onSave={form => editCustomer(dialog.customer, form)} onClose={() => setDialog(null)} />}
+
       {dialog?.kind === 'send' && (
-        <Dialog title={`Send WhatsApp to ${plural(waiting.length, 'customer')}`} onClose={() => setDialog(null)}>
-          {schedule?.whatsapp !== 'live' && <p className="warn">WhatsApp isn't connected yet, so nothing will reach customers. They stay on this list until it's connected.</p>}
+        <Dialog title={t('Send WhatsApp to {customers}', { customers: plural(summary?.due || 0, 'customer') })} onClose={() => setDialog(null)}>
+          {schedule?.whatsapp !== 'live' && <p className="warn">{t("WhatsApp isn't connected yet, so nothing will reach customers. They stay on this list until it's connected.")}</p>}
           <ul className="send-list">
             {waiting.map(c => (
               <li key={c.id}>
-                <span>{c.name}<span className="quiet">{providerOf(c)?.name}</span></span>
-                <span className={`tag ${kind(c)}`}>{c.status}</span>
+                <span>{c.name}<span className="quiet">{t(providers.find(p => p.id === c.type)?.name)}</span></span>
+                <span className={`tag ${/reject/i.test(c.status) ? 'bad' : 'ok'}`}>{t(c.status)}</span>
               </li>
             ))}
           </ul>
+          {summary?.due > waiting.length && <p className="quiet">{t('and {n} more', { n: summary.due - waiting.length })}</p>}
           <div className="dialog-foot">
-            <button className="btn" onClick={() => setDialog(null)}>Cancel</button>
-            <button className="btn primary" disabled={sending} onClick={sendAll}>{sending ? 'Sending…' : `Send to ${plural(waiting.length, 'customer')}`}</button>
+            <button className="btn" onClick={() => setDialog(null)}>{t('Cancel')}</button>
+            <button className="btn primary" disabled={sending} onClick={sendAll}>{sending ? t('Sending…') : t('Send to {customers}', { customers: plural(summary?.due || 0, 'customer') })}</button>
           </div>
         </Dialog>
       )}
 
       {dialog?.kind === 'notify' && (
-        <Dialog title="Send this update?" onClose={() => setDialog(null)}>
-          <p>{dialog.customer.name} will get "{dialog.customer.status}" on WhatsApp.</p>
+        <Dialog title={t('Send this update?')} onClose={() => setDialog(null)}>
+          <p>{t('{name} will get "{status}" on WhatsApp.', { name: dialog.customer.name, status: t(dialog.customer.status) })}</p>
           <div className="dialog-foot">
-            <button className="btn" onClick={() => setDialog(null)}>Cancel</button>
-            <button className="btn primary" onClick={() => notify(dialog.customer)}>Send update</button>
+            <button className="btn" onClick={() => setDialog(null)}>{t('Cancel')}</button>
+            <button className="btn primary" onClick={() => notify(dialog.customer)}>{t('Send update')}</button>
           </div>
         </Dialog>
       )}
 
       {dialog?.kind === 'delete' && (
-        <Dialog title="Delete this customer?" onClose={() => setDialog(null)}>
-          <p>{dialog.customer.name} ({dialog.customer.applicationNo}) and their history will be removed. This can't be undone.</p>
+        <Dialog title={t('Delete this customer?')} onClose={() => setDialog(null)}>
+          <p>{t("{name} ({number}) and their history will be removed. This can't be undone.", { name: dialog.customer.name, number: dialog.customer.applicationNo })}</p>
           <div className="dialog-foot">
-            <button className="btn" onClick={() => setDialog(null)}>Cancel</button>
-            <button className="btn stop-solid" onClick={() => remove(dialog.customer)}>Delete customer</button>
+            <button className="btn" onClick={() => setDialog(null)}>{t('Cancel')}</button>
+            <button className="btn stop-solid" onClick={() => remove(dialog.customer)}>{t('Delete customer')}</button>
           </div>
         </Dialog>
       )}
 
       <div className="toasts" role="status">
-        {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.tone}`}>
-            <span>{t.text}</span>
-            {t.action && <button onClick={() => { setToasts(l => l.filter(x => x.id !== t.id)); t.action.run(); }}>{t.action.label}</button>}
+        {toasts.map(x => (
+          <div key={x.id} className="toast">
+            <span>{x.text}</span>
+            {x.action && <button onClick={() => { setToasts(l => l.filter(y => y.id !== x.id)); x.action.run(); }}>{x.action.label}</button>}
           </div>
         ))}
       </div>

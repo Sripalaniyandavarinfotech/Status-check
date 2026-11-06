@@ -1,0 +1,17 @@
+[Unit]
+Description=Cloudflare Tunnel for the CRM
+After=network-online.target crm.service
+Wants=network-online.target
+
+[Service]
+User=crm
+Group=crm
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:3000
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

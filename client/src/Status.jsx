@@ -6,8 +6,8 @@ import { api, showError, when } from './lib.js';
 
 const TONE = { ok: 'ok', bad: 'bad', none: 'none', progress: '' };
 
-// The customers' own page. It needs no login.
-export default function Status() {
+// Used on this page and on the landing page.
+export function StatusForm({ autoFocus }) {
   const [form, setForm] = useState({ applicationNo: '', whatsapp: '' });
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
@@ -33,24 +33,33 @@ export default function Status() {
 
   return (
     <>
+      <form onSubmit={submit} noValidate>
+        <Field id="applicationNo" label={t('Application number')} className="upper" error={errors.applicationNo} value={form.applicationNo} onChange={change('applicationNo')} autoComplete="off" autoFocus={autoFocus} />
+        <Field id="whatsapp" label={t('WhatsApp number')} type="tel" inputMode="numeric" placeholder={t('10-digit mobile number')} error={errors.whatsapp} value={form.whatsapp} onChange={change('whatsapp')} autoComplete="tel" />
+        <button className="btn primary wide" disabled={busy}>{busy ? t('Checking…') : t('Check status')}</button>
+      </form>
+      {result && (result.found ? (
+        <div className="status-result" role="status">
+          <p className="quiet">{t(result.service)}</p>
+          <span className={`tag ${TONE[result.stage]}`}>{result.status ? t(result.status) : t('Received, not updated yet')}</span>
+          <p className="quiet">{t('Updated')}: {when(result.updated)}</p>
+        </div>
+      ) : (
+        <p className="warn status-result" role="status">{t('No application found. Please check both numbers, or contact our office.')}</p>
+      ))}
+    </>
+  );
+}
+
+// The customers' own page. It needs no login.
+export default function Status() {
+  return (
+    <>
       <Header />
       <main className="auth">
         <section className="auth-box">
           <h1>{t('Check your application')}</h1>
-          <form onSubmit={submit} noValidate>
-            <Field id="applicationNo" label={t('Application number')} className="upper" error={errors.applicationNo} value={form.applicationNo} onChange={change('applicationNo')} autoComplete="off" autoFocus />
-            <Field id="whatsapp" label={t('WhatsApp number')} type="tel" inputMode="numeric" placeholder={t('10-digit mobile number')} error={errors.whatsapp} value={form.whatsapp} onChange={change('whatsapp')} autoComplete="tel" />
-            <button className="btn primary wide" disabled={busy}>{busy ? t('Checking…') : t('Check status')}</button>
-          </form>
-          {result && (result.found ? (
-            <div className="status-result" role="status">
-              <p className="quiet">{t(result.service)}</p>
-              <span className={`tag ${TONE[result.stage]}`}>{result.status ? t(result.status) : t('Received, not updated yet')}</span>
-              <p className="quiet">{t('Updated')}: {when(result.updated)}</p>
-            </div>
-          ) : (
-            <p className="warn status-result" role="status">{t('No application found. Please check both numbers, or contact our office.')}</p>
-          ))}
+          <StatusForm autoFocus />
           <p className="auth-switch"><a href="/login">{t('Staff log in')}</a></p>
         </section>
       </main>

@@ -1,82 +1,104 @@
-import { useState } from 'react';
-import Dialog from './Dialog.jsx';
-import { PasswordField } from './Fields.jsx';
+import { useEffect, useRef, useState } from 'react';
 import { lang, setLang, t } from './i18n.js';
-import { api, showError } from './lib.js';
 
-function ChangeMyPassword({ onClose, onDone }) {
-  const [form, setForm] = useState({ current: '', password: '', again: '' });
-  const [errors, setErrors] = useState({});
-  const [busy, setBusy] = useState(false);
-  const change = key => e => setForm({ ...form, [key]: e.target.value });
+const LINKS = {
+  user: [['/', 'Customers'], ['/pan', 'PAN']],
+  admin: [['/admin', 'Users'], ['/admin/reports', 'Reports']],
+};
 
-  async function submit(e) {
-    e.preventDefault();
-    const found = {};
-    if (!form.current) found.current = t('Enter your current password');
-    if (form.password.length < 8) found.password = t('Use at least 8 characters');
-    else if (form.password !== form.again) found.again = t('The passwords do not match');
-    setErrors(found);
-    if (Object.keys(found).length) return;
-    setBusy(true);
-    try {
-      await api('auth/password', { method: 'POST', body: { current: form.current, password: form.password } });
-      onDone();
-    } catch (err) {
-      showError(err);
-      setBusy(false);
+// The profile icon. Everything about the person's own account is in this menu.
+function ProfileMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+  const button = useRef(null);
+  const menu = useRef(null);
+  const admin = user.role === 'admin';
+  const here = window.location.pathname;
+  const links = [
+    [admin ? '/admin/profile' : '/profile', 'Profile'],
+    [admin ? '/admin/activity' : '/activity', 'Activity'],
+    ['/home', 'Home page'],
+  ];
+
+  const items = () => [...menu.current.querySelectorAll('[role=menuitem]')];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    items()[0]?.focus();
+    const away = e => { if (!box.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [open]);
+
+  function onKey(e) {
+    const list = items();
+    const at = list.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') list[(at + 1) % list.length].focus();
+    else if (e.key === 'ArrowUp') list[(at - 1 + list.length) % list.length].focus();
+    else if (e.key === 'Home') list[0].focus();
+    else if (e.key === 'End') list[list.length - 1].focus();
+    else if (e.key === 'Escape') {
+      setOpen(false);
+      button.current.focus();
+    } else {
+      if (e.key === 'Tab') setOpen(false);
+      return;
     }
+    e.preventDefault();
   }
 
   return (
-    <Dialog title={t('Change my password')} onClose={onClose}>
-      <form onSubmit={submit} noValidate>
-        <PasswordField id="current" label={t('Current password')} error={errors.current} value={form.current} onChange={change('current')} autoComplete="current-password" />
-        <PasswordField id="password" label={t('New password')} error={errors.password} value={form.password} onChange={change('password')} autoComplete="new-password" />
-        <PasswordField id="again" label={t('New password again')} error={errors.again} value={form.again} onChange={change('again')} autoComplete="new-password" />
-        <p className="quiet">{t('Your other devices will be logged out.')}</p>
-        <div className="dialog-foot">
-          <button type="button" className="btn" onClick={onClose}>{t('Cancel')}</button>
-          <button className="btn primary" disabled={busy}>{busy ? t('Saving…') : t('Change password')}</button>
+    <div className="profile-menu" ref={box}>
+      <button
+        ref={button}
+        className={`profile-link ${open ? 'on' : ''}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`${t('Profile')}: ${user.userId}`}
+        onClick={() => setOpen(!open)}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="8.5" r="4" />
+          <path d="M4.5 20.5c1-4 3.8-6 7.5-6s6.5 2 7.5 6" />
+        </svg>
+        <span>{user.userId}</span>
+        <i className="menu-arrow" aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="menu" role="menu" ref={menu} aria-label={t('Profile')} onKeyDown={onKey}>
+          {links.map(([href, label]) => (
+            <a key={href} href={href} role="menuitem" aria-current={here === href ? 'page' : undefined}>{t(label)}</a>
+          ))}
+          <button role="menuitem" lang={lang === 'ta' ? 'en' : 'ta'} onClick={() => setLang(lang === 'ta' ? 'en' : 'ta')}>{lang === 'ta' ? 'English' : 'தமிழ்'}</button>
+          <hr />
+          <button role="menuitem" className="menu-out" onClick={onLogout}>{t('Log out')}</button>
         </div>
-      </form>
-    </Dialog>
+      )}
+    </div>
   );
 }
 
-const LINKS = {
-  user: [['/', 'Customers'], ['/activity', 'Activity'], ['/reports', 'Reports']],
-  admin: [['/admin', 'Users'], ['/admin/activity', 'Activity'], ['/admin/reports', 'Reports']],
-};
-
 // The indigo bar on every page.
 export default function Header({ user, onLogout, children }) {
-  const [asking, setAsking] = useState(false);
-  const [note, setNote] = useState('');
   const here = window.location.pathname;
   return (
-    <>
-      <header className="top">
-        <div className="wrap top-in">
-          <a className="brand" href="/"><span className="badge" aria-hidden="true">SP</span>{t('Sir Palaniyandavar Info Tech')}</a>
-          <div className="top-right">
-            {children}
-            <button className="btn on-ink" onClick={() => setLang(lang === 'ta' ? 'en' : 'ta')}>{lang === 'ta' ? 'English' : 'தமிழ்'}</button>
-            {user && <span className="who-am-i">{user.userId}</span>}
-            {user && <button className="btn on-ink" onClick={() => setAsking(true)}>{t('Change password')}</button>}
-            {user && <button className="btn on-ink" onClick={onLogout}>{t('Log out')}</button>}
-          </div>
+    <header className="top">
+      <div className="wrap top-in">
+        <a className="brand" href="/"><span className="badge" aria-hidden="true">SP</span>{t('Sir Palaniyandavar Info Tech')}</a>
+        <div className="top-right">
+          {children}
+          {user
+            ? <ProfileMenu user={user} onLogout={onLogout} />
+            : <button className="btn on-ink" onClick={() => setLang(lang === 'ta' ? 'en' : 'ta')}>{lang === 'ta' ? 'English' : 'தமிழ்'}</button>}
         </div>
-        {user && (
-          <nav className="site-nav" aria-label={t('Pages')}>
-            <div className="wrap">
-              {LINKS[user.role].map(([href, label]) => <a key={href} href={href} className={here === href || (href === '/' && here === '/login') ? 'on' : ''}>{t(label)}</a>)}
-            </div>
-          </nav>
-        )}
-      </header>
-      {note && <p className="wrap saved page-note" role="status">{note}</p>}
-      {asking && <ChangeMyPassword onClose={() => setAsking(false)} onDone={() => { setAsking(false); setNote(t('Your password has been changed')); }} />}
-    </>
+      </div>
+      {user && (
+        <nav className="site-nav" aria-label={t('Pages')}>
+          <div className="wrap">
+            {LINKS[user.role].map(([href, label]) => <a key={href} href={href} className={here === href || (href === '/' && here === '/login') ? 'on' : ''}>{t(label)}</a>)}
+          </div>
+        </nav>
+      )}
+    </header>
   );
 }

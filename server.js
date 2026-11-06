@@ -7,8 +7,11 @@ const path = require('path');
 const { byId, publicList, isValidNumber } = require('./providers');
 const whatsapp = require('./lib/whatsapp');
 const db = require('./lib/db');
+const os = require('os');
 const users = require('./lib/users');
 const customers = require('./lib/customers');
+const aadhaar = require('./lib/aadhaar');
+const operators = require('./lib/operators');
 const activity = require('./lib/activity');
 const mail = require('./lib/mail');
 
@@ -95,7 +98,7 @@ async function notifyCustomer(c) {
 
 // Final results of a manual stage: the only ones "Send WhatsApp updates" sends.
 const isFinal = status => /approved|accepted|e-?roll updated|reject/i.test(status);
-const wasSent = (c, status) => (c.notifications || []).some(n => n.ok && n.mode === 'live' && n.status === status);
+const wasSent = (c, status) => (c.notifications || []).some(n => n.ok && ['live', 'chat'].includes(n.mode) && n.status === status);
 
 // Looks up one customer, saves the result, and messages them on WhatsApp if the
 // status moved to a new stage.
@@ -105,6 +108,7 @@ async function refreshAndSave(id, actor) {
   const before = customer.status;
   const wasChecked = !!customer.lastChecked;
   await refreshCustomer(customer);
+  if (customer.status !== before) customer.informed = false; // there is new news to tell them
   if (!await customers.saveStatus(customer)) return null; // deleted while checking
   if (customer.status !== before) await activity.log({ actor, action: 'customer.status', owner: customer.owner, detail: `${customer.name} (${customer.applicationNo}): ${customer.status}` });
   // Not on the very first check (that's the starting point), and not for "not found".
@@ -227,16 +231,45 @@ async function customersApi(req, res, url, user) {
     const name = String(body.name || '').trim();
     const applicationNo = String(body.applicationNo || '').trim().toUpperCase();
     const whatsappNo = normalizeWhatsapp(body.whatsapp);
+    const aadhaarNo = String(body.aadhaar || '').replace(/[\s-]/g, '');
     if (!provider) throw httpError(400, 'Choose a service type');
     if (!name || name.length > 200) throw httpError(400, 'Name is required');
     if (!isValidNumber(provider, applicationNo)) throw httpError(400, `Enter a valid ${provider.numberLabel.toLowerCase()}`);
     if (!whatsappNo) throw httpError(400, 'Enter a valid 10-digit WhatsApp number');
-    return { name, applicationNo, whatsapp: whatsappNo, provider };
+    if (aadhaarNo && !aadhaar.isValid(aadhaarNo)) throw httpError(400, 'Enter a valid 12-digit Aadhaar number');
+    if (aadhaarNo && !aadhaar.ready()) throw httpError(503, 'Aadhaar numbers cannot be saved until AADHAAR_KEY is set');
+    return { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider };
   }
 
+  // Details only the PAN form has. Dates are kept as they appear on the receipt.
+  function panDetails(type) {
+    if (type !== 'pan') return {};
+    const panKind = String(body.panKind || '');
+    const birthDate = String(body.birthDate || '').trim();
+    const appliedOn = String(body.appliedOn || '').trim();
+    if (panKind && !['New', 'Correction'].includes(panKind)) throw httpError(400, 'Choose New or Correction');
+    if (birthDate && !isDate(birthDate)) throw httpError(400, 'Enter the date of birth as DD/MM/YYYY');
+    if (appliedOn && !isDate(appliedOn)) throw httpError(400, 'Enter the application date as DD/MM/YYYY');
+    return { panKind, birthDate, appliedOn };
+  }
+
+  async function chosenOperator() {
+    const operatorId = String(body.operatorId || '');
+    if (!operatorId) return null;
+    if (!/^[0-9]{1,18}$/.test(operatorId) || !await operators.owned(operatorId, user.id)) throw httpError(400, 'Choose an operator from your list');
+    return operatorId;
+  }
+
+  // The full number is never saved in plain text, and the last 4 digits are for display.
+  const aadhaarFields = (customerId, number) => (number
+    ? { aadhaarLast4: number.slice(-4), aadhaarSealed: aadhaar.seal(number, customerId) }
+    : {});
+
   if (req.method === 'POST' && !id) {
-    const { name, applicationNo, whatsapp: whatsappNo, provider } = details(body.type);
-    const customer = await customers.add({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), owner: user.id, type: provider.id, name, applicationNo, whatsapp: whatsappNo });
+    const { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider } = details(body.type);
+    const operatorId = await chosenOperator();
+    const newId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const customer = await customers.add({ id: newId, owner: user.id, type: provider.id, name, applicationNo, whatsapp: whatsappNo, operatorId, ...panDetails(provider.id), ...aadhaarFields(newId, aadhaarNo) });
     if (!customer) return send(res, 409, { error: `${applicationNo} is already saved under ${provider.name}` });
     await record('customer.add', label(customer));
     return send(res, 201, customer);
@@ -270,11 +303,33 @@ async function customersApi(req, res, url, user) {
   }
 
   if (req.method === 'POST' && action === 'edit') {
-    const { name, applicationNo, whatsapp: whatsappNo, provider } = details(customer.type);
-    const updated = await customers.edit(customer, { name, applicationNo, whatsapp: whatsappNo });
+    const { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider } = details(customer.type);
+    const updated = await customers.edit(customer, { name, applicationNo, whatsapp: whatsappNo, operatorId: await chosenOperator(), ...panDetails(customer.type), ...aadhaarFields(customer.id, aadhaarNo) });
     if (!updated) return send(res, 409, { error: `${applicationNo} is already saved under ${provider.name}` });
     await record('customer.edit', label(updated));
     return send(res, 200, updated);
+  }
+
+  // Every look at a full number is limited and recorded in the activity log.
+  if (req.method === 'POST' && action === 'aadhaar') {
+    const key = `aadhaar|${user.id}`;
+    if (users.limited(key, 30)) return send(res, 429, { error: 'Too many tries. Wait 10 minutes and try again.' });
+    users.countTry(key, 10 * 60 * 1000);
+    const sealed = await customers.sealedAadhaar(id);
+    if (!sealed) return send(res, 404, { error: 'No Aadhaar number is saved for this customer' });
+    let number;
+    try {
+      number = aadhaar.open(sealed, id);
+    } catch {
+      return send(res, 500, { error: 'This Aadhaar number cannot be read. Check AADHAAR_KEY.' });
+    }
+    await record('aadhaar.view', label(customer));
+    return send(res, 200, { aadhaar: number });
+  }
+
+  if (req.method === 'POST' && action === 'aadhaar-remove') {
+    await record('aadhaar.remove', label(customer));
+    return send(res, 200, await customers.removeAadhaar(id));
   }
 
   if (req.method === 'POST' && action === 'notes') {
@@ -299,10 +354,34 @@ async function customersApi(req, res, url, user) {
     const status = String(body.status || '').trim();
     if (!byId[customer.type]?.manual) return send(res, 400, { error: 'This service is checked automatically' });
     if (!status || status.length > 100) return send(res, 400, { error: 'Enter a status of up to 100 characters' });
+    if (status !== customer.status) customer.informed = false; // there is new news to tell them
     setStatus(customer, status, true);
-    customer.notifyDue = isFinal(status) && !wasSent(customer, status);
+    customer.notifyDue = !customer.informed && isFinal(status) && !wasSent(customer, status);
     await customers.saveStatus(customer);
     await record('customer.status', `${label(customer)}: ${status}`);
+    return send(res, 200, customer);
+  }
+
+  // The user sends these from their own WhatsApp, so the site only keeps a record.
+  if (req.method === 'POST' && action === 'chat-sent') {
+    if (!customer.found) return send(res, 400, { error: 'Check the status first' });
+    const rec = whatsapp.chatRecord(customer, byId[customer.type]?.name || customer.type);
+    await customers.addNotification(id, { ...rec, text: String(body.text || rec.text).slice(0, 1000) }, false);
+    await record('whatsapp.one', label(customer));
+    return send(res, 200, await customers.find(id));
+  }
+
+  if (req.method === 'POST' && action === 'chat-undo') {
+    await record('whatsapp.undo', label(customer));
+    return send(res, 200, await customers.undoChat(id, body.wasDue === true));
+  }
+
+  // Someone told the customer, by WhatsApp or any other way, so nothing is left to send.
+  if (req.method === 'POST' && action === 'informed') {
+    customer.informed = body.informed === true;
+    customer.notifyDue = !customer.informed && !!customer.found && isFinal(customer.status || '') && !wasSent(customer, customer.status);
+    await customers.saveStatus(customer);
+    await record(customer.informed ? 'customer.informed' : 'customer.not-informed', label(customer));
     return send(res, 200, customer);
   }
 
@@ -328,12 +407,28 @@ function sessionCookie(token, maxAgeMs) {
   return `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${secure}`;
 }
 
+const isDate = text => {
+  const m = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return false;
+  const d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])));
+  return d.getUTCDate() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1;
+};
+
 const publicUser = u => ({ userId: u.userId, role: u.role });
+
+// Through a tunnel every visitor arrives from this computer, and Cloudflare names
+// the real one. Only trusted when the request really came from the local tunnel.
+function visitorAddress(req) {
+  const from = req.socket.remoteAddress;
+  const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(from);
+  const named = process.env.BEHIND_TUNNEL === 'on' && local && req.headers['cf-connecting-ip'];
+  return named ? String(named).slice(0, 64) : from;
+}
 
 // The customer's own lookup. It needs no login, so it gives away as little as
 // possible: the same answer for a wrong number and a wrong WhatsApp number.
 async function publicStatus(req, res) {
-  const key = `status|${req.socket.remoteAddress}`;
+  const key = `status|${visitorAddress(req)}`;
   if (users.limited(key, 20)) return send(res, 429, { error: 'Too many tries. Wait 10 minutes and try again.' });
   users.countTry(key, 10 * 60 * 1000);
   const body = await readBody(req);
@@ -350,9 +445,59 @@ async function publicStatus(req, res) {
   });
 }
 
+// Clears a user's own customers. Their password is the proof it is really them.
+async function resetData(req, res, user) {
+  const key = `reset-data|${user.id}`;
+  if (users.limited(key, 5)) return send(res, 429, { error: 'Too many wrong tries. Wait 15 minutes and try again.' });
+  const body = await readBody(req);
+  if (!await users.passwordIsRight(user.id, body.password)) {
+    users.countTry(key, 15 * 60 * 1000);
+    return send(res, 400, { error: 'Your password is wrong' });
+  }
+  users.clearTries(key);
+  if (progress?.owners[user.id] || sendingUpdates.has(user.id)) return send(res, 409, { error: 'Wait for the running check or WhatsApp sending to finish' });
+  const removed = await customers.resetOwner(user.id);
+  await activity.log({ actor: user, action: 'data.reset', owner: user.id, detail: `${removed} customers removed` });
+  send(res, 200, { removed });
+}
+
+// The user's list of operators, kept on their Profile page.
+async function operatorsApi(req, res, url, user) {
+  const id = url.pathname.split('/')[3];
+  if (id && !/^[0-9]{1,18}$/.test(id)) return send(res, 404, { error: 'Operator not found' });
+  const record = (action, detail) => activity.log({ actor: user, action, owner: user.id, detail });
+
+  if (req.method === 'GET' && !id) return send(res, 200, await operators.list(user.id));
+
+  if (req.method === 'DELETE' && id) {
+    if (!await operators.remove(id, user.id)) return send(res, 404, { error: 'Operator not found' });
+    await record('operator.remove', '');
+    return send(res, 200, { ok: true });
+  }
+
+  if (req.method !== 'POST') return send(res, 405, { error: 'Not allowed' });
+  const body = await readBody(req);
+  const name = String(body.name || '').trim().replace(/\s+/g, ' ');
+  if (!name || name.length > 60) return send(res, 400, { error: 'Enter an operator name of up to 60 characters' });
+  const taken = { error: `${name} is already in your list` };
+
+  if (!id) {
+    const added = await operators.add(user.id, name);
+    if (!added) return send(res, 409, taken);
+    await record('operator.add', name);
+    return send(res, 201, added);
+  }
+
+  const changed = await operators.rename(id, user.id, name);
+  if (changed === 'duplicate') return send(res, 409, taken);
+  if (!changed) return send(res, 404, { error: 'Operator not found' });
+  await record('operator.rename', name);
+  return send(res, 200, { id, name });
+}
+
 async function authApi(req, res, url) {
   const action = url.pathname.split('/')[3];
-  const ip = req.socket.remoteAddress;
+  const ip = visitorAddress(req);
 
   if (req.method === 'GET' && action === 'me') {
     const user = await users.userForToken(sessionToken(req));
@@ -450,7 +595,7 @@ async function adminApi(req, res, url, admin) {
 
 // The React site from client/, built by `npm run build`.
 const PUBLIC = path.join(__dirname, 'dist');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2' };
+const TYPES = { '.mjs': 'text/javascript; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 
 const PAGES = {
   400: ['Bad request', 'The address could not be understood. Please check it and try again.'],
@@ -474,14 +619,14 @@ function sendPage(res, code) {
 <title>${title} - Sir Palaniyandavar Info Tech</title>
 <style>
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:#f1f3f9;color:#171c33;font:400 16px/1.5 system-ui,sans-serif}
-header{background:#1b2559;color:#fff;padding:18px 24px;font-size:20px;font-weight:700}
+body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:#f3edde;color:#0b0f0d;font:400 16px/1.5 system-ui,sans-serif}
+header{background:#1f2a1f;color:#fff;padding:18px 24px;font-size:20px;font-weight:700}
 main{flex:1;display:grid;place-items:center;padding:24px 16px}
-section{width:min(440px,100%);background:#fff;border-radius:12px;padding:28px 24px;text-align:center;box-shadow:0 16px 44px -14px rgba(27,37,89,.45)}
-b{display:block;font-size:52px;line-height:1.1;color:#f5a800}
-h1{margin:8px 0;font-size:24px;line-height:1.2;color:#1b2559}
-p{margin:0 0 20px;color:#565d7c}
-a{display:inline-block;padding:11px 20px;border-radius:8px;background:#1b2559;color:#fff;font-weight:600;text-decoration:none}
+section{width:min(440px,100%);background:#fffdf8;border-radius:12px;padding:28px 24px;text-align:center;box-shadow:0 16px 44px -14px rgba(31,42,31,.45)}
+b{display:block;font-size:52px;line-height:1.1;color:#b08d57}
+h1{margin:8px 0;font-size:24px;line-height:1.2;color:#1f2a1f}
+p{margin:0 0 20px;color:#535e52}
+a{display:inline-block;padding:11px 20px;border-radius:8px;background:#1f2a1f;color:#fff;font-weight:600;text-decoration:none}
 </style>
 </head>
 <body>
@@ -493,7 +638,7 @@ a{display:inline-block;padding:11px 20px;border-radius:8px;background:#1b2559;co
 }
 
 // Pages the React site handles; everything else must be a real file in dist.
-const SITE_PAGES = ['/', '/login', '/register', '/forgot', '/reset', '/status', '/activity', '/reports', '/admin', '/admin/activity', '/admin/reports'];
+const SITE_PAGES = ['/', '/home', '/pan', '/login', '/register', '/forgot', '/reset', '/status', '/activity', '/reports', '/profile', '/admin', '/admin/activity', '/admin/reports', '/admin/profile'];
 
 function serveStatic(req, res, pathname) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -513,7 +658,7 @@ function serveStatic(req, res, pathname) {
 // ---- For search engines: only the public pages ----
 function sitemap(res) {
   const base = mail.appUrl();
-  const urls = ['/login', '/register', '/forgot', '/status'].map(p => `  <url><loc>${base}${p}</loc></url>`).join('\n');
+  const urls = ['/', '/status', '/login', '/register', '/forgot'].map(p => `  <url><loc>${base}${p}</loc></url>`).join('\n');
   res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
   res.end(`<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -564,6 +709,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname.startsWith('/api/admin/') || url.pathname === '/api/admin') {
         return user.role === 'admin' ? await adminApi(req, res, url, user) : send(res, 403, { error: 'Admins only' });
       }
+      if (url.pathname === '/api/profile') return send(res, 200, await users.profile(user.id));
       if (user.role !== 'user') return send(res, 403, { error: 'The admin account has no customers' });
 
       if (url.pathname === '/api/providers') return send(res, 200, publicList());
@@ -589,7 +735,9 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { times: CHECK_TIMES, timezone: TZ, gapSeconds: GAP_MS / 1000, nextRun: nextRunLabel(), running: progress?.owners[user.id] || null, lastRun: await customers.lastRun(user.id), whatsapp: whatsapp.mode() });
       }
 
+      if (url.pathname === '/api/reset-data' && req.method === 'POST') return await resetData(req, res, user);
       if (url.pathname.startsWith('/api/customers')) return await customersApi(req, res, url, user);
+      if (url.pathname === '/api/operators' || url.pathname.startsWith('/api/operators/')) return await operatorsApi(req, res, url, user);
 
       return send(res, 404, { error: 'Not found' });
     } catch (e) {
@@ -613,12 +761,18 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res, url.pathname);
 });
 
+// This computer's addresses on the local network.
+function networkAddresses() {
+  return Object.values(os.networkInterfaces()).flat().filter(n => n.family === 'IPv4' && !n.internal).map(n => n.address);
+}
+
 // A mistake in one request must not stop the site for everyone.
 process.on('unhandledRejection', e => console.error('[unexpected]', e));
 
 db.setup().then(() => {
-  server.listen(PORT, async () => {
+  server.listen(PORT, process.env.HOST || undefined, async () => {
     console.log(`CRM running at http://localhost:${PORT}`);
+    if (!process.env.HOST) for (const address of networkAddresses()) console.log(`Other devices on your network: http://${address}:${PORT}`);
     if (!await users.hasAdmin()) console.log('No admin yet. Create one with: node create-admin.js');
     if (!fs.existsSync(path.join(PUBLIC, 'index.html'))) console.log('The website is not built yet. Run: npm run build');
   });

@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ORDER = ['certificate', 'smartcard', 'voter', 'aadhaar']; // display order; unknown ids go last
+const ORDER = ['certificate', 'smartcard', 'voter', 'aadhaar', 'pan']; // display order; unknown ids go last
 
 const providers = fs.readdirSync(__dirname)
   .filter(f => f.endsWith('.js') && f !== 'index.js' && !f.startsWith('_'))
@@ -19,8 +19,8 @@ for (const p of providers) {
 }
 
 // Public info for the browser (no functions).
-const publicList = () => providers.map(({ id, name, shortName, numberLabel, placeholder, pattern, page, ready, manual, officialUrl, openLabel, stages }) =>
-  ({ id, name, shortName: shortName || name, numberLabel, placeholder, pattern, page, ready: !!ready, manual: !!manual, officialUrl, openLabel, stages }));
+const publicList = () => providers.map(({ id, name, shortName, numberLabel, placeholder, pattern, page, ready, manual, officialUrl, openLabel, stages, separatePage }) =>
+  ({ id, name, shortName: shortName || name, numberLabel, placeholder, pattern, page, ready: !!ready, manual: !!manual, officialUrl, openLabel, stages, separatePage: !!separatePage }));
 
 const isValidNumber = (p, number) => new RegExp(p.pattern).test(number);
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily backup of the CRM database
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=crm
+Group=crm
+WorkingDirectory=/opt/crm
+ExecStart=/bin/bash /opt/crm/deploy/laptop/backup.sh

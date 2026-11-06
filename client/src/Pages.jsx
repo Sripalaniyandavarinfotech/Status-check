@@ -14,8 +14,17 @@ const ACTIONS = {
   'note.add': 'Added a note',
   'note.delete': 'Deleted a note',
   'whatsapp.one': 'Sent a WhatsApp update',
+  'whatsapp.undo': 'Marked a WhatsApp update as not sent',
+  'customer.informed': 'Marked a customer as informed',
+  'operator.add': 'Added an operator',
+  'operator.rename': 'Renamed an operator',
+  'operator.remove': 'Removed an operator',
+  'customer.not-informed': 'Marked a customer as not informed',
+  'aadhaar.view': 'Viewed an Aadhaar number',
+  'aadhaar.remove': 'Removed an Aadhaar number',
   'whatsapp.send': 'Sent WhatsApp updates',
   'check.run': 'Ran the certificate check',
+  'data.reset': 'Reset all customer data',
   'user.add': 'Added a user',
   'user.accept': 'Accepted a user',
   'user.refuse': 'Refused a registration',
@@ -78,7 +87,7 @@ export function ActivityPage({ user, onLogout }) {
   );
 }
 
-function Months({ months }) {
+export function MonthsTable({ months }) {
   return (
     <section>
       <h2 className="report-title">{t('Last 6 months')}</h2>
@@ -110,89 +119,82 @@ function Months({ months }) {
   );
 }
 
+export function ServicesTable({ services, nameOf }) {
+  return (
+    <section>
+      <h2 className="report-title">{t('By service')}</h2>
+      <div className="table-box">
+        <table className="users">
+          <thead>
+            <tr>
+              <th scope="col">{t('Service')}</th>
+              <th scope="col" className="count">{t('Total')}</th>
+              <th scope="col" className="count">{t('In progress')}</th>
+              <th scope="col" className="count">{t('Approved')}</th>
+              <th scope="col" className="count">{t('Rejected')}</th>
+              <th scope="col" className="count">{t('No status yet')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {services.map(s => (
+              <tr key={s.type}>
+                <th scope="row">{nameOf(s.type)}</th>
+                <td className="count">{s.total}</td>
+                <td className="count">{s.progress}</td>
+                <td className="count">{s.approved}</td>
+                <td className="count">{s.rejected}</td>
+                <td className="count">{s.new}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// The admin's totals. A user's own numbers are on their Profile page.
 export function ReportsPage({ user, onLogout }) {
-  const admin = user.role === 'admin';
   const [data, setData] = useState(null);
-  const [providers, setProviders] = useState([]);
 
-  useEffect(() => {
-    api(admin ? 'admin/reports' : 'reports').then(setData).catch(showError);
-    if (!admin) api('providers').then(setProviders).catch(() => {});
-  }, [admin]);
-
-  const nameOf = type => t(providers.find(p => p.id === type)?.shortName || type);
+  useEffect(() => { api('admin/reports').then(setData).catch(showError); }, []);
 
   return (
     <Frame user={user} onLogout={onLogout} title={t('Reports')}>
       {data && (
         <div className="reports">
-          {!admin && (
-            <section>
-              <h2 className="report-title">{t('By service')}</h2>
-              {data.services.length ? (
-                <div className="table-box">
-                  <table className="users">
-                    <thead>
-                      <tr>
-                        <th scope="col">{t('Service')}</th>
-                        <th scope="col" className="count">{t('Total')}</th>
-                        <th scope="col" className="count">{t('In progress')}</th>
-                        <th scope="col" className="count">{t('Approved')}</th>
-                        <th scope="col" className="count">{t('Rejected')}</th>
-                        <th scope="col" className="count">{t('No status yet')}</th>
+          <section>
+            <h2 className="report-title">{t('By user')}</h2>
+            {data.users.length ? (
+              <div className="table-box">
+                <table className="users">
+                  <thead>
+                    <tr>
+                      <th scope="col">{t('Username')}</th>
+                      <th scope="col" className="count">{t('Total')}</th>
+                      <th scope="col" className="count">{t('This month')}</th>
+                      <th scope="col" className="count">{t('Approved')}</th>
+                      <th scope="col" className="count">{t('Rejected')}</th>
+                      <th scope="col" className="count">{t('WhatsApp sent')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.users.map(u => (
+                      <tr key={u.userId}>
+                        <th scope="row">{u.userId}</th>
+                        <td className="count">{u.total}</td>
+                        <td className="count">{u.thisMonth}</td>
+                        <td className="count">{u.approved}</td>
+                        <td className="count">{u.rejected}</td>
+                        <td className="count">{u.sent}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {data.services.map(s => (
-                        <tr key={s.type}>
-                          <th scope="row">{nameOf(s.type)}</th>
-                          <td className="count">{s.total}</td>
-                          <td className="count">{s.progress}</td>
-                          <td className="count">{s.approved}</td>
-                          <td className="count">{s.rejected}</td>
-                          <td className="count">{s.new}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : <div className="empty"><p>{t('Add customers to see reports here.')}</p></div>}
-            </section>
-          )}
-          {admin && (
-            <section>
-              <h2 className="report-title">{t('By user')}</h2>
-              {data.users.length ? (
-                <div className="table-box">
-                  <table className="users">
-                    <thead>
-                      <tr>
-                        <th scope="col">{t('Username')}</th>
-                        <th scope="col" className="count">{t('Total')}</th>
-                        <th scope="col" className="count">{t('This month')}</th>
-                        <th scope="col" className="count">{t('Approved')}</th>
-                        <th scope="col" className="count">{t('Rejected')}</th>
-                        <th scope="col" className="count">{t('WhatsApp sent')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.users.map(u => (
-                        <tr key={u.userId}>
-                          <th scope="row">{u.userId}</th>
-                          <td className="count">{u.total}</td>
-                          <td className="count">{u.thisMonth}</td>
-                          <td className="count">{u.approved}</td>
-                          <td className="count">{u.rejected}</td>
-                          <td className="count">{u.sent}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : <div className="empty"><p>{t('No users yet')}</p></div>}
-            </section>
-          )}
-          <Months months={data.months} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <div className="empty"><p>{t('No users yet')}</p></div>}
+          </section>
+          <MonthsTable months={data.months} />
         </div>
       )}
     </Frame>

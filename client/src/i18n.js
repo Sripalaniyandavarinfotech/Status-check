@@ -20,15 +20,18 @@ export function setLang(next) {
 
 const fill = (text, vars) => (vars ? text.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)) : text);
 
-// Translates a fixed text, or a message from the server. Unknown text stays as it is.
-export function t(text, vars) {
-  if (lang !== 'ta' || typeof text !== 'string') return fill(String(text ?? ''), vars);
+// Tamil whatever language the site is showing, for messages to customers.
+export function tamil(text, vars) {
+  if (typeof text !== 'string') return fill(String(text ?? ''), vars);
   if (TA[text]) return fill(TA[text], vars);
-  for (const [pattern, tamil] of PATTERNS) {
+  for (const [pattern, ta] of PATTERNS) {
     const m = text.match(pattern);
-    if (m) return tamil.replace(/\$(\d)/g, (_, i) => t(m[i]));
+    if (m) return ta.replace(/\$(\d)/g, (_, i) => tamil(m[i]));
   }
   return fill(text, vars);
 }
+
+// Translates a fixed text, or a message from the server. Unknown text stays as it is.
+export const t = (text, vars) => (lang === 'ta' ? tamil(text, vars) : fill(String(text ?? ''), vars));
 
 export const plural = (n, word) => (lang === 'ta' ? `${n} ${TA[word] || word}` : `${n} ${word}${n === 1 ? '' : 's'}`);

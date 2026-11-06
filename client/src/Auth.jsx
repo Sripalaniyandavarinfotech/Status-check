@@ -4,15 +4,46 @@ import Header from './Header.jsx';
 import { t } from './i18n.js';
 import { api, showError } from './lib.js';
 
+// One application on its way through, shown beside the form. It is an example, not real data.
+function SampleApplication() {
+  return (
+    <figure className="sample">
+      <figcaption>
+        <span>{t('Sample application')}</span>
+        <b>{t('Community certificate')}</b>
+      </figcaption>
+      <ol>
+        <li>{t('Submitted')}</li>
+        <li>{t('In Process')}</li>
+        <li>{t('Approved')}</li>
+      </ol>
+      <span className="stamp ok">{t('Approved')}</span>
+      <p className="sample-chat">
+        <b>{t('WhatsApp')}</b>
+        {t('Your application is approved.')}
+      </p>
+    </figure>
+  );
+}
+
 function Page({ title, children }) {
   return (
     <>
       <Header />
-      <main className="auth">
-        <section className="auth-box">
-          <h1>{title}</h1>
-          {children}
+      <main className="auth-split">
+        <section className="auth-form">
+          <div className="auth-box">
+            <h1>{title}</h1>
+            {children}
+          </div>
         </section>
+        <aside className="auth-side">
+          <div>
+            <h2>{t('Every application, followed to the end')}</h2>
+            <p>{t("Track each customer's application and send WhatsApp updates from one place.")}</p>
+            <SampleApplication />
+          </div>
+        </aside>
       </main>
     </>
   );
@@ -49,6 +80,7 @@ export function Login({ admin, onLogin }) {
         {!admin && <p className="auth-switch"><a href="/forgot">{t('Forgotten password?')}</a></p>}
         {!admin && <p className="auth-switch">{t('New here?')} <a href="/register">{t('Register')}</a></p>}
         {!admin && <p className="auth-switch"><a href="/status">{t('Check your application')}</a></p>}
+        {!admin && <p className="auth-switch"><a href="/">{t('Back to home page')}</a></p>}
       </form>
     </Page>
   );

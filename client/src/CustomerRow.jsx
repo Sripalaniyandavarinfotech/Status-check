@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { plural, t } from './i18n.js';
-import { kind, phone, when, whatsappLink } from './lib.js';
+import { api, copyText, kind, phone, showError, when, whatsappLink } from './lib.js';
 
 const isReject = s => /reject/i.test(s);
 
@@ -22,27 +22,68 @@ function StageTrack({ c, provider, onStage }) {
   );
 }
 
-function OtherStatus({ c, onStage }) {
-  const [value, setValue] = useState('');
+// Copies a value, which can be fetched at that moment, and shows that it worked.
+function CopyButton({ value, label, className = 'btn' }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  async function copy() {
+    try {
+      const text = typeof value === 'function' ? await value() : value;
+      if (await copyText(text)) setCopied(true);
+      else showError({ message: t('Could not copy. Select the number and copy it by hand.') });
+    } catch (e) {
+      showError(e);
+    }
+  }
+
+  return <button className={className} aria-label={label} onClick={copy}>{t(copied ? 'Copied' : 'Copy')}</button>;
+}
+
+// The full number is fetched only when asked for, and hides itself again.
+function AadhaarLine({ c, onRemove }) {
+  const [number, setNumber] = useState('');
+
+  useEffect(() => {
+    if (!number) return undefined;
+    const timer = setTimeout(() => setNumber(''), 30000);
+    return () => clearTimeout(timer);
+  }, [number]);
+
+  const fetchNumber = async () => number || (await api(`customers/${c.id}/aadhaar`, { method: 'POST' })).aadhaar;
+
+  async function show() {
+    try {
+      setNumber(await fetchNumber());
+    } catch (e) {
+      showError(e);
+    }
+  }
+
   return (
-    <form className="other" onSubmit={e => { e.preventDefault(); if (value.trim()) { onStage(c, value.trim()); setValue(''); } }}>
-      <label htmlFor={`other-${c.id}`}>{t('Status not listed? Type it as the website shows it')}</label>
-      <div>
-        <input id={`other-${c.id}`} value={value} maxLength={100} onChange={e => setValue(e.target.value)} />
-        <button className="btn">{t('Save status')}</button>
-      </div>
-    </form>
+    <p className="aadhaar-line">
+      {t('Aadhaar')}: {number ? number.replace(/(\d{4})(?=\d)/g, '$1 ') : `XXXX XXXX ${c.aadhaarLast4}`}
+      {c.hasAadhaar && <button className="link-btn" onClick={number ? () => setNumber('') : show}>{t(number ? 'Hide' : 'Show')}</button>}
+      {c.hasAadhaar && <CopyButton className="link-btn" value={fetchNumber} label={t('Copy Aadhaar number of {name}', { name: c.name })} />}
+      <button className="link-btn" onClick={() => onRemove(c)}>{t('Remove')}</button>
+    </p>
   );
 }
 
 function History({ c }) {
-  if (!c.notifications?.length) return <p className="quiet">{t('No WhatsApp updates yet.')}</p>;
+  const sent = (c.notifications || []).filter(n => n.mode !== 'test');
+  if (!sent.length) return <p className="quiet">{t('No WhatsApp updates yet.')}</p>;
   return (
     <ul className="history">
-      {c.notifications.slice(0, 5).map(n => (
+      {sent.slice(0, 5).map(n => (
         <li key={n.at} title={n.text}>
           <span className={n.ok ? '' : 'bad-text'}>
-            {!n.ok ? `${t('Failed')}: ${t(n.error)}` : n.mode === 'test' ? t("Not sent, WhatsApp isn't connected") : t('Sent')}
+            {!n.ok ? `${t('Failed')}: ${t(n.error)}` : n.mode === 'chat' ? t('Opened in WhatsApp') : t('Sent')}
           </span>
           <span className="quiet">{t(n.status)}, {when(n.at)}</span>
         </li>
@@ -88,21 +129,21 @@ function Notes({ c, onAdd, onRemove }) {
   );
 }
 
-export default function CustomerRow({ c, provider, open, thud, busy, onToggle, onStage, onOpenSite, onCheck, onNotify, onEdit, onDelete, onAddNote, onRemoveNote }) {
+export default function CustomerRow({ c, provider, open, thud, busy, chat, onToggle, onStage, onOpenSite, onCheck, onNotify, onChat, onInformed, onEdit, onDelete, onAddNote, onRemoveNote, onRemoveAadhaar }) {
   const k = kind(c);
   const manual = provider?.manual;
   const finished = k === 'ok' || k === 'bad';
   const label = c.lastChecked ? t(c.status) : manual ? t('Not updated yet') : t('Not checked yet');
 
   return (
-    <li className={`row ${open ? 'open' : ''}`}>
+    <li className={`row ${open ? 'open' : ''} ${c.informed ? 'informed' : ''}`}>
       <div className="row-main">
         <button className="row-toggle" aria-expanded={open} onClick={onToggle}>
           <span className="who">
             <span className={`initial ${k}`} aria-hidden="true">{c.name.trim()[0]?.toUpperCase()}</span>
             <span className="who-text">
               <strong>{c.name}</strong>
-              <span className="quiet">{t(provider?.name || c.type)}</span>
+              <span className="quiet">{t(provider?.name || c.type)}{c.operatorName ? `, ${c.operatorName}` : ''}</span>
             </span>
           </span>
           <span className="num">
@@ -119,7 +160,13 @@ export default function CustomerRow({ c, provider, open, thud, busy, onToggle, o
           </span>
           <span className="chev" aria-hidden="true" />
         </button>
-        <div className="row-actions">
+        <div className={`row-actions ${chat && c.notifyDue ? 'due-row' : ''}`}>
+          {chat && c.notifyDue && <button className="btn primary" onClick={() => onChat(c)}>{t('Send on WhatsApp')}</button>}
+          <label className="informed-check">
+            <input type="checkbox" checked={!!c.informed} onChange={e => onInformed(c, e.target.checked)} />
+            {t('Informed')}
+          </label>
+          <CopyButton value={c.applicationNo} label={t('Copy application number of {name}', { name: c.name })} />
           {manual ? (
             <>
               <button className="btn" onClick={() => onOpenSite(c)}>{t(provider.openLabel)}</button>
@@ -138,14 +185,18 @@ export default function CustomerRow({ c, provider, open, thud, busy, onToggle, o
             <section>
               <h3>{t('Stage')}</h3>
               <StageTrack c={c} provider={provider} onStage={onStage} />
-              <OtherStatus c={c} onStage={onStage} />
             </section>
           )}
           <Notes c={c} onAdd={onAddNote} onRemove={onRemoveNote} />
           <div className="row-facts">
             <section>
               <h3>{t('Application')}</h3>
+              {c.operatorName && <p>{t('Operator')}: {c.operatorName}</p>}
+              {c.panKind && <p>{t('Application type')}: {t(c.panKind)}</p>}
+              {c.birthDate && <p>{t('Date of birth')}: {c.birthDate}</p>}
+              {c.appliedOn && <p>{t('Application date')}: {c.appliedOn}</p>}
               {c.service && <p>{c.service}</p>}
+              {c.aadhaarLast4 && <AadhaarLine c={c} onRemove={onRemoveAadhaar} />}
               {c.remarks && <p>{c.remarks}</p>}
               {c.previousStatus && <p className="quiet">{t('Before this')}: {t(c.previousStatus)}</p>}
               <p className="quiet">{manual ? t('Updated') : t('Checked')}: {when(c.lastChecked)}</p>
@@ -156,7 +207,9 @@ export default function CustomerRow({ c, provider, open, thud, busy, onToggle, o
             </section>
             <section className="row-tools">
               <button className="btn" onClick={() => onEdit(c)}>{t('Edit customer')}</button>
-              <button className="btn" disabled={!c.found} onClick={() => onNotify(c)}>{t('Send update now')}</button>
+              {chat
+                ? <button className="btn" disabled={!c.found} onClick={() => onChat(c)}>{t('Send on WhatsApp')}</button>
+                : <button className="btn" disabled={!c.found} onClick={() => onNotify(c)}>{t('Send update now')}</button>}
               <a className="btn" href={whatsappLink(c, provider)} target="_blank" rel="noopener noreferrer">{t('Open chat')}</a>
               <button className="btn stop" onClick={() => onDelete(c)}>{t('Delete customer')}</button>
             </section>

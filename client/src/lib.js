@@ -1,4 +1,4 @@
-import { lang, plural, t } from './i18n.js';
+import { lang, plural, t, tamil } from './i18n.js';
 
 export { plural };
 
@@ -58,18 +58,44 @@ export const when = iso => (iso
   ? new Date(iso).toLocaleString(LOCALE, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
   : t('Not yet'));
 
+export const shortMonth = ym => new Date(`${ym}-15`).toLocaleString(LOCALE, { month: 'short' });
+
 export const monthName = ym => new Date(`${ym}-15`).toLocaleString(LOCALE, { month: 'long', year: 'numeric' });
 
-export function whatsappLink(c, provider) {
-  const what = c.service || provider?.name || c.type;
-  const text = c.lastChecked && c.found
-    ? `Hello ${c.name}, your application ${c.applicationNo} (${what}) status: ${c.status}.${c.remarks ? ` Remarks: ${c.remarks}.` : ''}`
-    : `Hello ${c.name}, regarding your application ${c.applicationNo} (${what}).`;
-  return `https://wa.me/${c.whatsapp}?text=${encodeURIComponent(text)}`;
+// Customers always get Tamil, whichever language the staff member's site is in.
+export function whatsappText(c, provider) {
+  const service = tamil(provider?.shortName || c.service || c.type);
+  const values = { name: c.name, service, number: c.applicationNo };
+  return c.lastChecked && c.found
+    ? tamil('Hello {name}, there is an update on your {service} application {number}. Current status: {status}. Thank you.', { ...values, status: tamil(c.status) })
+    : tamil('Hello {name}, regarding your {service} application {number}.', values);
+}
+
+export const whatsappLink = (c, provider) => `https://wa.me/${c.whatsapp}?text=${encodeURIComponent(whatsappText(c, provider))}`;
+
+// Browsers only offer the clipboard on https and localhost, so plain addresses
+// like http://192.168.1.40 use the older way.
+export async function copyText(text) {
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch { /* falls through to the older way */ }
+  }
+  const box = document.createElement('textarea');
+  box.value = text;
+  box.setAttribute('readonly', '');
+  box.style.position = 'fixed';
+  box.style.opacity = '0';
+  (document.querySelector('dialog[open]') || document.body).append(box);
+  box.select();
+  const done = document.execCommand('copy');
+  box.remove();
+  return done;
 }
 
 export function downloadCsv(customers, providers, fileName) {
-  const cols = ['name', 'type', 'applicationNo', 'whatsapp', 'service', 'status', 'remarks', 'lastChecked', 'createdAt'];
+  const cols = ['name', 'type', 'operatorName', 'panKind', 'applicationNo', 'whatsapp', 'birthDate', 'appliedOn', 'service', 'status', 'remarks', 'lastChecked', 'createdAt'];
   const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const name = c => providers.find(p => p.id === c.type)?.name || c.type;
   const lines = [cols.join(','), ...customers.map(c => cols.map(k => cell(k === 'type' ? name(c) : c[k])).join(','))];

@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import AddCustomer from './AddCustomer.jsx';
 import CustomerRow from './CustomerRow.jsx';
 import Dialog from './Dialog.jsx';
-import { Pager } from './Fields.jsx';
+import { Pager, SearchBox } from './Fields.jsx';
 import Header from './Header.jsx';
 import { plural, t } from './i18n.js';
-import { api, downloadCsv, kind, showError, when } from './lib.js';
+import { api, downloadCsv, kind, showError, whatsappLink, whatsappText, when } from './lib.js';
 
 const VIEWS = [
   { id: 'all', label: 'All' },
@@ -14,11 +14,12 @@ const VIEWS = [
   { id: 'approved', label: 'Approved' },
   { id: 'rejected', label: 'Rejected' },
   { id: 'new', label: 'No status yet' },
+  { id: 'informed', label: 'Informed' },
 ];
 
 const WHATSAPP_NOTE = {
   live: 'WhatsApp connected',
-  test: 'WhatsApp not connected yet',
+  test: 'One-click WhatsApp',
   off: 'WhatsApp updates off',
 };
 
@@ -29,10 +30,12 @@ function headline(s) {
   return t('{applications} on file, none in progress', { applications: plural(s.total, 'application') });
 }
 
-export default function App({ user, onLogout }) {
+// `only` shows one service on its own page. Services with their own page stay off the main one.
+export default function App({ user, onLogout, only }) {
   const [list, setList] = useState(null); // the open page of customers
   const [summary, setSummary] = useState(null); // the counts around it
   const [providers, setProviders] = useState([]);
+  const [operators, setOperators] = useState([]);
   const [schedule, setSchedule] = useState(null);
   const [offline, setOffline] = useState(false);
   const [view, setView] = useState('all');
@@ -47,10 +50,14 @@ export default function App({ user, onLogout }) {
   const [thudId, setThudId] = useState(null);
   const [checking, setChecking] = useState(null);
   const [sending, setSending] = useState(false);
+  const [chatOpened, setChatOpened] = useState({}); // customers opened from the send list
   const searchRef = useRef(null);
   const latest = useRef(0);
+  const moved = useRef(''); // the search that last chose a box
 
-  const box = service || providers[0]?.id; // the service box that is open
+  const shown = providers.filter(p => (only ? p.id === only : !p.separatePage));
+  const shownIds = shown.map(p => p.id);
+  const box = service || shown[0]?.id; // the service box that is open
   const boxProvider = providers.find(p => p.id === box);
   const providerOf = c => providers.find(p => p.id === c.type);
   const refresh = useCallback(() => setReload(n => n + 1), []);
@@ -70,12 +77,12 @@ export default function App({ user, onLogout }) {
   const loadSchedule = useCallback(async () => setSchedule(await api('schedule')), []);
 
   useEffect(() => {
-    Promise.all([api('providers').then(setProviders), loadSchedule()]).catch(() => setOffline(true));
+    Promise.all([api('providers').then(setProviders), api('operators').then(setOperators), loadSchedule()]).catch(() => setOffline(true));
   }, [loadSchedule]);
 
   // Waits for a pause in typing before searching.
   useEffect(() => {
-    const timer = setTimeout(() => { setSearch(query.trim()); setPage(1); }, 250);
+    const timer = setTimeout(() => { setSearch(query.trim()); setPage(1); moved.current = ''; }, 250);
     return () => clearTimeout(timer);
   }, [query]);
 
@@ -91,6 +98,16 @@ export default function App({ user, onLogout }) {
         setList(l);
         setSummary(s);
         setOffline(false);
+        // A new search with nothing here opens the place that has its results.
+        if (search && moved.current !== search) {
+          moved.current = search;
+          const here = s.boxes.find(b => b.type === box)?.matches;
+          const other = s.boxes.find(b => b.matches && providers.find(p => p.id === b.type && (only ? p.id === only : !p.separatePage)))?.type;
+          if (!l.total && (here || other)) {
+            setView('all');
+            if (!here) setService(other);
+          }
+        }
       })
       .catch(() => { if (ask === latest.current) setOffline(true); });
   }, [box, view, search, page, reload]);
@@ -192,6 +209,15 @@ export default function App({ user, onLogout }) {
     }
   }
 
+  async function removeAadhaar(c) {
+    setDialog(null);
+    try {
+      replace(await api(`customers/${c.id}/aadhaar-remove`, { method: 'POST' }));
+    } catch (e) {
+      showError(e);
+    }
+  }
+
   async function notify(c) {
     setDialog(null);
     try {
@@ -247,9 +273,56 @@ export default function App({ user, onLogout }) {
     }
   }
 
+  // Without Meta's service, updates go out from the user's own WhatsApp. The site
+  // can't see if they pressed send, so the message can be taken back.
+  async function setInformed(c, informed) {
+    try {
+      replace(await api(`customers/${c.id}/informed`, { method: 'POST', body: { informed } }));
+    } catch (e) {
+      showError(e);
+    }
+  }
+
+  const chatUndo = (c, wasDue) => api(`customers/${c.id}/chat-undo`, { method: 'POST', body: { wasDue } }).then(replace).catch(showError);
+
+  async function chatSend(c) {
+    window.open(whatsappLink(c, providerOf(c)), '_blank', 'noopener');
+    const wasDue = !!c.notifyDue;
+    try {
+      replace(await api(`customers/${c.id}/chat-sent`, { method: 'POST', body: { text: whatsappText(c, providerOf(c)) } }));
+      toast(t('WhatsApp opened for {name}. Press send there.', { name: c.name }), { action: { label: t('Not sent'), run: () => chatUndo(c, wasDue) } });
+    } catch (e) {
+      showError(e);
+    }
+  }
+
+  // In the send list, which covers the page, "Not sent" sits beside the customer.
+  async function chatSendFromList(c) {
+    window.open(whatsappLink(c, providerOf(c)), '_blank', 'noopener');
+    try {
+      replace(await api(`customers/${c.id}/chat-sent`, { method: 'POST', body: { text: whatsappText(c, providerOf(c)) } }));
+      setChatOpened(l => ({ ...l, [c.id]: true }));
+    } catch (e) {
+      showError(e);
+    }
+  }
+
+  async function chatUndoFromList(c) {
+    await chatUndo(c, true);
+    setChatOpened(({ [c.id]: gone, ...rest }) => rest);
+  }
+
+  function openSendList() {
+    setChatOpened({});
+    setDialog({ kind: 'send', list: waiting });
+  }
+
+  const chat = !!schedule && schedule.whatsapp !== 'live';
   const r = schedule?.lastRun;
   const progress = schedule?.running;
-  const waiting = summary?.waiting || [];
+  // Counts for just the services on this page.
+  const scope = (summary?.boxes || []).filter(b => shownIds.includes(b.type)).reduce((n, b) => ({ total: n.total + b.total, due: n.due + b.due, progress: n.progress + b.progress }), { total: 0, due: 0, progress: 0 });
+  const waiting = (summary?.waiting || []).filter(c => shownIds.includes(c.type));
   const boxInfo = id => summary?.boxes.find(b => b.type === id) || { total: 0, due: 0, matches: 0 };
   const open = boxInfo(box);
 
@@ -263,12 +336,14 @@ export default function App({ user, onLogout }) {
         {offline && <p className="offline" role="alert">{t("The CRM server isn't responding. Check that node server.js is running in your terminal.")}</p>}
 
         <section className="lead">
-          <h1>{summary ? headline(summary) : t('Loading customers…')}</h1>
-          <button className="btn primary" onClick={() => setDialog({ kind: 'add' })} disabled={!providers.length}>{t('Add customer')}</button>
+          <h1>{summary ? headline(scope) : t('Loading customers…')}</h1>
+          <button className="btn primary" onClick={() => setDialog({ kind: 'add' })} disabled={!boxProvider}>{boxProvider ? t('Add {service} customer', { service: t(boxProvider.shortName) }) : t('Add customer')}</button>
         </section>
 
-        <nav className="boxes" aria-label={t('Choose a service')}>
-          {providers.map(p => {
+        <SearchBox inputRef={searchRef} label={t('Search customers')} placeholder={t('Search name or number (press /)')} value={query} onChange={e => setQuery(e.target.value)} />
+
+        {!only && <nav className="boxes" aria-label={t('Choose a service')}>
+          {shown.map(p => {
             const info = boxInfo(p.id);
             return (
               <button key={p.id} className={p.id === box ? 'on' : ''} aria-pressed={p.id === box} onClick={() => openBox(p.id)}>
@@ -278,7 +353,7 @@ export default function App({ user, onLogout }) {
               </button>
             );
           })}
-        </nav>
+        </nav>}
 
         <nav className="views" aria-label={t('Filter by status')}>
           {VIEWS.map(v => (
@@ -306,7 +381,6 @@ export default function App({ user, onLogout }) {
         )}
 
         <div className="tools">
-          <input ref={searchRef} className="search" type="search" aria-label={t('Search customers')} placeholder={t('Search name or number (press /)')} value={query} onChange={e => setQuery(e.target.value)} />
           <button className="btn" disabled={!open.total} onClick={download}>{t('Download CSV')}</button>
         </div>
 
@@ -321,15 +395,19 @@ export default function App({ user, onLogout }) {
                   open={openId === c.id}
                   thud={thudId === c.id}
                   busy={checking === c.id}
+                  chat={chat}
                   onToggle={() => setOpenId(openId === c.id ? null : c.id)}
                   onStage={setStage}
                   onOpenSite={openSite}
                   onCheck={check}
                   onNotify={x => setDialog({ kind: 'notify', customer: x })}
+                  onChat={chatSend}
+                  onInformed={setInformed}
                   onEdit={x => setDialog({ kind: 'edit', customer: x })}
                   onDelete={x => setDialog({ kind: 'delete', customer: x })}
                   onAddNote={addNote}
                   onRemoveNote={removeNote}
+                  onRemoveAadhaar={x => setDialog({ kind: 'aadhaar', customer: x })}
                 />
               ))}
             </ul>
@@ -337,41 +415,48 @@ export default function App({ user, onLogout }) {
           </>
         ) : (
           <div className="empty">
-            {open.total
-              ? <p>{t('No customers match this filter.')}</p>
+            {search
+              ? <p>{t('Nothing found for "{search}"', { search })}</p>
+              : open.total
+              ? <p>{t(view === 'informed' ? 'Customers you mark as informed appear here.' : 'No customers match this filter.')}</p>
               : <p>{t('{service} customers appear here with their application status.', { service: t(boxProvider?.shortName) })}</p>}
           </div>
         ))}
       </main>
 
-      {summary?.due > 0 && (
+      {scope.due > 0 && (
         <div className="send-bar">
           <div className="wrap send-in">
-            <span>{t('{customers} approved or rejected', { customers: plural(summary.due, 'customer') })}</span>
-            <button className="btn ink" onClick={() => setDialog({ kind: 'send' })}>{t('Review and send WhatsApp')}</button>
+            <span>{t('{customers} approved or rejected', { customers: plural(scope.due, 'customer') })}</span>
+            <button className="btn ink" onClick={openSendList}>{t('Review and send WhatsApp')}</button>
           </div>
         </div>
       )}
 
-      {dialog?.kind === 'add' && <AddCustomer providers={providers} initial={box} onSave={addCustomer} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'add' && <AddCustomer key={box} provider={boxProvider} operators={operators} onSave={addCustomer} onClose={() => setDialog(null)} />}
 
-      {dialog?.kind === 'edit' && <AddCustomer providers={providers} customer={dialog.customer} onSave={form => editCustomer(dialog.customer, form)} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'edit' && <AddCustomer provider={providerOf(dialog.customer)} operators={operators} customer={dialog.customer} onSave={form => editCustomer(dialog.customer, form)} onClose={() => setDialog(null)} />}
 
       {dialog?.kind === 'send' && (
-        <Dialog title={t('Send WhatsApp to {customers}', { customers: plural(summary?.due || 0, 'customer') })} onClose={() => setDialog(null)}>
-          {schedule?.whatsapp !== 'live' && <p className="warn">{t("WhatsApp isn't connected yet, so nothing will reach customers. They stay on this list until it's connected.")}</p>}
+        <Dialog title={t('Send WhatsApp to {customers}', { customers: plural(chat ? dialog.list.length : scope.due, 'customer') })} onClose={() => setDialog(null)}>
+          {chat && <p className="quiet">{t('Click Send for each customer, then press send in WhatsApp.')}</p>}
           <ul className="send-list">
-            {waiting.map(c => (
+            {(chat ? dialog.list : waiting).map(c => (
               <li key={c.id}>
                 <span>{c.name}<span className="quiet">{t(providers.find(p => p.id === c.type)?.name)}</span></span>
-                <span className={`tag ${/reject/i.test(c.status) ? 'bad' : 'ok'}`}>{t(c.status)}</span>
+                <span className="send-end">
+                  <span className={`tag ${/reject/i.test(c.status) ? 'bad' : 'ok'}`}>{t(c.status)}</span>
+                  {chat && (chatOpened[c.id]
+                    ? <button className="btn" onClick={() => chatUndoFromList(c)}>{t('Not sent')}</button>
+                    : <button className="btn primary" onClick={() => chatSendFromList(c)}>{t('Send')}</button>)}
+                </span>
               </li>
             ))}
           </ul>
-          {summary?.due > waiting.length && <p className="quiet">{t('and {n} more', { n: summary.due - waiting.length })}</p>}
+          {scope.due > waiting.length && <p className="quiet">{t('and {n} more', { n: scope.due - waiting.length })}</p>}
           <div className="dialog-foot">
-            <button className="btn" onClick={() => setDialog(null)}>{t('Cancel')}</button>
-            <button className="btn primary" disabled={sending} onClick={sendAll}>{sending ? t('Sending…') : t('Send to {customers}', { customers: plural(summary?.due || 0, 'customer') })}</button>
+            <button className="btn" onClick={() => setDialog(null)}>{t(chat ? 'Close' : 'Cancel')}</button>
+            {!chat && <button className="btn primary" disabled={sending} onClick={sendAll}>{sending ? t('Sending…') : t('Send to {customers}', { customers: plural(scope.due, 'customer') })}</button>}
           </div>
         </Dialog>
       )}
@@ -382,6 +467,16 @@ export default function App({ user, onLogout }) {
           <div className="dialog-foot">
             <button className="btn" onClick={() => setDialog(null)}>{t('Cancel')}</button>
             <button className="btn primary" onClick={() => notify(dialog.customer)}>{t('Send update')}</button>
+          </div>
+        </Dialog>
+      )}
+
+      {dialog?.kind === 'aadhaar' && (
+        <Dialog title={t('Remove this Aadhaar number?')} onClose={() => setDialog(null)}>
+          <p>{t("{name}'s Aadhaar number will be deleted. This can't be undone.", { name: dialog.customer.name })}</p>
+          <div className="dialog-foot">
+            <button className="btn" onClick={() => setDialog(null)}>{t('Cancel')}</button>
+            <button className="btn stop-solid" onClick={() => removeAadhaar(dialog.customer)}>{t('Remove')}</button>
           </div>
         </Dialog>
       )}

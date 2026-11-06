@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import Dialog from './Dialog.jsx';
-import { Field, PasswordField } from './Fields.jsx';
+import { Field, PasswordField, SearchBox } from './Fields.jsx';
 import Header from './Header.jsx';
 import { plural, t } from './i18n.js';
 import { api, showError } from './lib.js';
@@ -86,6 +86,7 @@ function ChangePassword({ target, onSave, onClose }) {
 export default function Admin({ user, onLogout }) {
   const [list, setList] = useState(null);
   const [view, setView] = useState('all');
+  const [search, setSearch] = useState('');
   const [dialog, setDialog] = useState(null); // { kind: 'add' | 'suspend' | 'refuse' | 'password', target? }
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState('');
@@ -130,7 +131,9 @@ export default function Admin({ user, onLogout }) {
   }
 
   const all = list || [];
-  const shown = all.filter(VIEWS.find(v => v.id === view).test);
+  const words = search.trim().toLowerCase();
+  const found = all.filter(u => !words || u.userId.toLowerCase().includes(words) || (u.phone || '').includes(words));
+  const shown = found.filter(VIEWS.find(v => v.id === view).test);
   const target = dialog?.target;
 
   return (
@@ -145,10 +148,12 @@ export default function Admin({ user, onLogout }) {
         {error && <p className="offline" role="alert">{error}</p>}
         {note && <p className="saved" role="status">{note}</p>}
 
+        <SearchBox label={t('Search users')} placeholder={t('Search user ID or phone number')} value={search} onChange={e => setSearch(e.target.value)} />
+
         <nav className="views" aria-label="Filter users">
           {VIEWS.map(v => (
             <button key={v.id} className={view === v.id ? 'on' : ''} aria-pressed={view === v.id} onClick={() => setView(v.id)}>
-              <b>{all.filter(v.test).length}</b>
+              <b>{found.filter(v.test).length}</b>
               {t(v.label)}
             </button>
           ))}
@@ -188,7 +193,7 @@ export default function Admin({ user, onLogout }) {
             </table>
           </div>
         ) : (
-          <div className="empty"><p>{all.length ? t('No users in this list.') : t('People who register will appear here for you to accept.')}</p></div>
+          <div className="empty"><p>{words ? t('Nothing found for "{search}"', { search: search.trim() }) : all.length ? t('No users in this list.') : t('People who register will appear here for you to accept.')}</p></div>
         ))}
       </main>
 

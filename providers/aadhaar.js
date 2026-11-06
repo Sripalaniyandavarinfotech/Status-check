@@ -1,7 +1,7 @@
 // Aadhaar enrolment and update status from UIDAI.
 // Manual service: the official page needs a captcha, so the CRM opens it and the
-// staff member picks the stage. A 12-digit Aadhaar number is refused on purpose:
-// tracking needs only the request number, and the CRM must not hold Aadhaar numbers.
+// staff member picks the stage. A 12-digit Aadhaar number is refused in this box on
+// purpose: it isn't encrypted here. The Aadhaar number has its own encrypted box.
 async function lookup() {
   throw new Error('Aadhaar status is updated by hand on the customer list');
 }

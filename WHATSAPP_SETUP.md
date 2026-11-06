@@ -61,6 +61,8 @@ Meta only lets a business start a conversation with a template it has approved.
    {{4}} new status.
 3. Submit it. Approval usually takes from a few minutes to a few hours.
 
+The one-click **Send on WhatsApp** button always writes in Tamil and needs no template. Automatic sending uses this template, so for Tamil there, create a Tamil template. The status inside it stays as the site saved it, usually English.
+
 To use Tamil or other wording, create the template that way, keeping the same 4
 blanks in the same order. Then set `WA_TEMPLATE` and `WA_TEMPLATE_LANG` (for
 example `ta`) to match.

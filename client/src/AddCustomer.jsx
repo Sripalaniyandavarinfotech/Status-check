@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Dialog from './Dialog.jsx';
 import { t } from './i18n.js';
-import { showError } from './lib.js';
+import { showError, today } from './lib.js';
 import { parsePanReceipt, pdfLines } from './panReceipt.js';
 
 const EMPTY = { operatorId: '', name: '', applicationNo: '', whatsapp: '', aadhaar: '', panKind: '', birthDate: '', appliedOn: '' };
@@ -28,14 +28,20 @@ function validate(form, provider, needOperator) {
 
 // Each service box has its own form, for the service that is open. It stays open so
 // several can be entered in a row. With `customer` it edits that one and closes after saving.
-export default function AddCustomer({ provider, operators, customer, onSave, onClose }) {
+export default function AddCustomer({ provider, agency = '', operators, customer, onSave, onClose }) {
   const [form, setForm] = useState(customer
     ? { name: customer.name, applicationNo: customer.applicationNo, whatsapp: customer.whatsapp.slice(2), aadhaar: '', operatorId: customer.operatorId || '', panKind: customer.panKind || '', birthDate: customer.birthDate || '', appliedOn: customer.appliedOn || '' }
-    : EMPTY);
+    : { ...EMPTY, appliedOn: today() });
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState('');
+  const [result, setResult] = useState(''); // 'done' or 'error', for a moment after saving
+  const flash = state => {
+    setResult(state);
+    setTimeout(() => setResult(r => (r === state ? '' : r)), state === 'done' ? 1400 : 500);
+  };
   const [receipt, setReceipt] = useState(''); // the note after reading a receipt
+  const [dragging, setDragging] = useState(false); // a file is being dragged over the page
   const nameRef = useRef(null);
   const type = provider.id;
   const needOperator = !customer && operators.length > 0;
@@ -56,24 +62,25 @@ export default function AddCustomer({ provider, operators, customer, onSave, onC
     e.preventDefault();
     const found = validate(form, provider, needOperator);
     setErrors(found);
-    if (Object.keys(found).length) return;
+    if (Object.keys(found).length) return flash('error');
     setSaving(true);
     try {
-      await onSave({ type, ...form });
+      await onSave({ type, ...form, panAgency: agency || undefined });
       if (customer) return;
+      flash('done');
       setSaved(form.name.trim());
-      setForm({ ...EMPTY, operatorId: form.operatorId }); // the same operator usually adds the next one
+      setForm({ ...EMPTY, operatorId: form.operatorId, appliedOn: today() }); // the same operator usually adds the next one
       nameRef.current.focus();
     } catch (err) {
+      flash('error');
       showError(err);
     }
     setSaving(false);
+    return undefined;
   }
 
   // The file is read here in the browser, and is never sent or saved.
-  async function readReceipt(e) {
-    const file = e.target.files[0];
-    e.target.value = ''; // so the same file can be chosen again
+  async function readReceipt(file) {
     if (!file) return;
     setReceipt('');
     try {
@@ -91,6 +98,30 @@ export default function AddCustomer({ provider, operators, customer, onSave, onC
     }
   }
 
+  // A receipt can be dropped anywhere, so a near miss doesn't open the PDF and leave the site.
+  const takesReceipt = type === 'pan' && agency === 'UTI' && !customer;
+  useEffect(() => {
+    if (!takesReceipt) return undefined;
+    const over = e => {
+      e.preventDefault();
+      setDragging(true);
+    };
+    const leave = e => { if (!e.relatedTarget) setDragging(false); };
+    const drop = e => {
+      e.preventDefault();
+      setDragging(false);
+      readReceipt(e.dataTransfer.files[0]);
+    };
+    window.addEventListener('dragover', over);
+    window.addEventListener('dragleave', leave);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragover', over);
+      window.removeEventListener('dragleave', leave);
+      window.removeEventListener('drop', drop);
+    };
+  }, [takesReceipt]);
+
   const field = (key, label, props) => (
     <div className="field">
       <label htmlFor={key}>{label}</label>
@@ -100,15 +131,18 @@ export default function AddCustomer({ provider, operators, customer, onSave, onC
   );
 
   return (
-    <Dialog title={customer ? t('Edit {service} customer', { service: t(provider.shortName) }) : t('Add {service} customer', { service: t(provider.shortName) })} onClose={onClose}>
+    <Dialog title={customer ? t('Edit {service} customer', { service: agency ? `${t(provider.shortName)} ${agency}` : t(provider.shortName) }) : t('Add {service} customer', { service: agency ? `${t(provider.shortName)} ${agency}` : t(provider.shortName) })} onClose={onClose}>
       {saved && <p className="saved" role="status">{t('Saved {name}. Add the next customer, or close this panel.', { name: saved })}</p>}
-      {type === 'pan' && !customer && (
+      {type === 'pan' && agency === 'NSDL' && !customer && (
+        <p className="quiet add-note">{t('Reading NSDL receipts comes once a sample receipt is added. Type the details for now.')}</p>
+      )}
+      {takesReceipt && (
         <div className="receipt-box">
-          <label className="btn">
-            <input type="file" accept="application/pdf,.pdf" onChange={readReceipt} />
-            {t('Upload receipt')}
+          <label className={`receipt-drop ${dragging ? 'on' : ''}`}>
+            <input type="file" accept="application/pdf,.pdf" onChange={e => { const file = e.target.files[0]; e.target.value = ''; readReceipt(file); }} />
+            <b>{t(dragging ? 'Drop the receipt here' : 'Upload receipt')}</b>
+            <span>{t('Drag the UTIITSL PDF here, or click to choose it')}</span>
           </label>
-          <span className="quiet">{t('UTIITSL PDF receipt. The details fill in by themselves.')}</span>
           {receipt && <p className="saved" role="status">{receipt}</p>}
         </div>
       )}
@@ -127,7 +161,7 @@ export default function AddCustomer({ provider, operators, customer, onSave, onC
             {errors.operatorId && <p className="field-error">{errors.operatorId}</p>}
           </fieldset>
         ) : !customer && <p className="quiet add-note">{t('Add your operators in Profile to choose one here.')}</p>}
-        {type === 'pan' && (
+        {['pan', 'smartcard'].includes(type) && (
           <fieldset className="field pick">
             <legend>{t('Application type')}</legend>
             <div>
@@ -147,9 +181,13 @@ export default function AddCustomer({ provider, operators, customer, onSave, onC
           <p className="warn">{t('This is a new number, so the saved status will be cleared.')}</p>
         )}
         {field('whatsapp', t('WhatsApp number'), { type: 'tel', inputMode: 'numeric', placeholder: t('10-digit mobile number') })}
-        {type === 'pan' && field('appliedOn', t('Application date'), { inputMode: 'numeric', placeholder: 'DD/MM/YYYY' })}
+        {field('appliedOn', t('Application date'), { inputMode: 'numeric', placeholder: 'DD/MM/YYYY' })}
         {askAadhaar && field('aadhaar', t('Aadhaar number (optional)'), { inputMode: 'numeric', placeholder: customer?.aadhaarLast4 ? t('XXXX XXXX {digits} saved. Type to replace it.', { digits: customer.aadhaarLast4 }) : t('12-digit number') })}
-        <button className="btn primary wide" disabled={saving}>{saving ? t('Saving…') : customer ? t('Save changes') : t('Save customer')}</button>
+        <button className={`btn primary wide save-btn ${saving ? 'busy' : result}`} disabled={saving} aria-live="polite">
+          {saving ? <><i className="save-spin" aria-hidden="true" />{t('Saving…')}</>
+            : result === 'done' ? <><i className="save-tick" aria-hidden="true" />{t('Saved')}</>
+              : customer ? t('Save changes') : t('Save customer')}
+        </button>
       </form>
     </Dialog>
   );

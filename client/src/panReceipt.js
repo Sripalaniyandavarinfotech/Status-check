@@ -14,7 +14,7 @@ const after = (lines, label, pattern) => {
 export function parsePanReceipt(lines) {
   const text = lines.join('\n');
   if (!/PAN Application Acknowledgment Receipt/i.test(text)) return null;
-  const applicationNo = (text.match(/\bU-[A-Z][0-9]{6,12}\b/) || [''])[0];
+  const applicationNo = (text.match(/\bU-([A-Z][0-9]{6,12})\b/) || [])[1]; // without the U-
   if (!applicationNo) return null;
   const date = /\b\d{2}\/\d{2}\/\d{4}\b/;
   const nameLine = lines.find(l => /Name as per Aadhaar/i.test(l)) || '';

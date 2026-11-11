@@ -1,26 +1,8 @@
 import { useEffect, useState } from 'react';
 import { plural, t } from './i18n.js';
-import { api, copyText, kind, phone, showError, when, whatsappLink } from './lib.js';
+import { api, copyText, kind, phone, showError, when, whatsappLink, withAgency } from './lib.js';
 
 const isReject = s => /reject/i.test(s);
-
-// The same stage track the official sites show, but each stage can be clicked.
-function StageTrack({ c, provider, onStage }) {
-  const steps = provider.stages.filter(s => !isReject(s));
-  const at = steps.indexOf(c.status);
-  return (
-    <ol className="track">
-      {steps.map((s, i) => (
-        <li key={s} className={i < at ? 'passed' : i === at ? 'here' : ''}>
-          <button onClick={() => onStage(c, s)} aria-current={i === at ? 'step' : undefined}>
-            <span className="dot" aria-hidden="true">{i <= at ? '✓' : ''}</span>
-            {t(s)}
-          </button>
-        </li>
-      ))}
-    </ol>
-  );
-}
 
 // Copies a value, which can be fetched at that moment, and shows that it worked.
 function CopyButton({ value, label, className = 'btn' }) {
@@ -129,7 +111,7 @@ function Notes({ c, onAdd, onRemove }) {
   );
 }
 
-export default function CustomerRow({ c, provider, open, thud, busy, chat, onToggle, onStage, onOpenSite, onCheck, onNotify, onChat, onInformed, onEdit, onDelete, onAddNote, onRemoveNote, onRemoveAadhaar }) {
+export default function CustomerRow({ c, provider, open, thud, busy, chat, onPerson, onToggle, onStage, onOpenSite, onCheck, onNotify, onChat, onInformed, onEdit, onDelete, onAddNote, onRemoveNote, onRemoveAadhaar }) {
   const k = kind(c);
   const manual = provider?.manual;
   const finished = k === 'ok' || k === 'bad';
@@ -142,8 +124,11 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onTog
           <span className="who">
             <span className={`initial ${k}`} aria-hidden="true">{c.name.trim()[0]?.toUpperCase()}</span>
             <span className="who-text">
-              <strong>{c.name}</strong>
-              <span className="quiet">{t(provider?.name || c.type)}{c.operatorName ? `, ${c.operatorName}` : ''}</span>
+              <span className="who-name">
+                <strong>{c.name}</strong>
+                {c.panKind && <span className={`kind ${c.panKind.toLowerCase()}`}>{t(c.panKind)}</span>}
+              </span>
+              <span className="quiet">{t(provider?.name || c.type)}{c.panAgency ? ` ${c.panAgency}` : ''}{c.operatorName ? `, ${c.operatorName}` : ''}</span>
             </span>
           </span>
           <span className="num">
@@ -157,6 +142,7 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onTog
             {c.notifyDue && <span className="due">{t('Waiting to send')}</span>}
             {c.notifications?.[0] && !c.notifications[0].ok && <span className="bad-text small">{t('Last message failed')}</span>}
             {c.notes?.length > 0 && <span className="quiet small">{plural(c.notes.length, 'note')}</span>}
+            {c.samePhone > 1 && <span className="quiet small">{t('{n} applications on this number', { n: c.samePhone })}</span>}
           </span>
           <span className="chev" aria-hidden="true" />
         </button>
@@ -169,7 +155,7 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onTog
           <CopyButton value={c.applicationNo} label={t('Copy application number of {name}', { name: c.name })} />
           {manual ? (
             <>
-              <button className="btn" onClick={() => onOpenSite(c)}>{t(provider.openLabel)}</button>
+              <button className="btn" onClick={() => onOpenSite(c)}>{t(withAgency(provider, c.panAgency).openLabel)}</button>
               <button className="btn good" disabled={k === 'ok'} onClick={() => onStage(c, 'Approved')}>{t('Approved')}</button>
               <button className="btn stop" disabled={isReject(c.status || '')} onClick={() => onStage(c, 'Rejected')}>{t('Rejected')}</button>
             </>
@@ -179,43 +165,41 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onTog
         </div>
       </div>
 
-      {open && (
-        <div className="row-more">
-          {manual && (
-            <section>
-              <h3>{t('Stage')}</h3>
-              <StageTrack c={c} provider={provider} onStage={onStage} />
-            </section>
-          )}
-          <Notes c={c} onAdd={onAddNote} onRemove={onRemoveNote} />
-          <div className="row-facts">
-            <section>
-              <h3>{t('Application')}</h3>
-              {c.operatorName && <p>{t('Operator')}: {c.operatorName}</p>}
-              {c.panKind && <p>{t('Application type')}: {t(c.panKind)}</p>}
-              {c.birthDate && <p>{t('Date of birth')}: {c.birthDate}</p>}
-              {c.appliedOn && <p>{t('Application date')}: {c.appliedOn}</p>}
-              {c.service && <p>{c.service}</p>}
-              {c.aadhaarLast4 && <AadhaarLine c={c} onRemove={onRemoveAadhaar} />}
-              {c.remarks && <p>{c.remarks}</p>}
-              {c.previousStatus && <p className="quiet">{t('Before this')}: {t(c.previousStatus)}</p>}
-              <p className="quiet">{manual ? t('Updated') : t('Checked')}: {when(c.lastChecked)}</p>
-            </section>
-            <section>
-              <h3>{t('WhatsApp')}</h3>
-              <History c={c} />
-            </section>
-            <section className="row-tools">
-              <button className="btn" onClick={() => onEdit(c)}>{t('Edit customer')}</button>
-              {chat
-                ? <button className="btn" disabled={!c.found} onClick={() => onChat(c)}>{t('Send on WhatsApp')}</button>
-                : <button className="btn" disabled={!c.found} onClick={() => onNotify(c)}>{t('Send update now')}</button>}
-              <a className="btn" href={whatsappLink(c, provider)} target="_blank" rel="noopener noreferrer">{t('Open chat')}</a>
-              <button className="btn stop" onClick={() => onDelete(c)}>{t('Delete customer')}</button>
-            </section>
+      {/* Always in the page, so it can slide open and shut. Closed, it can't be reached by keyboard. */}
+      <div className={`row-more-wrap ${open ? 'open' : ''}`} inert={!open} aria-hidden={!open}>
+        <div className="row-more-clip">
+          <div className="row-more">
+              <Notes c={c} onAdd={onAddNote} onRemove={onRemoveNote} />
+              <div className="row-facts">
+                <section>
+                  <h3>{t('Application')}</h3>
+                  {c.operatorName && <p>{t('Operator')}: {c.operatorName}</p>}
+                  {c.panKind && <p>{t('Application type')}: {t(c.panKind)}</p>}
+                  {c.birthDate && <p>{t('Date of birth')}: {c.birthDate}</p>}
+                  {c.appliedOn && <p>{t('Application date')}: {c.appliedOn}</p>}
+                  {c.service && <p>{c.service}</p>}
+                  {c.aadhaarLast4 && <AadhaarLine c={c} onRemove={onRemoveAadhaar} />}
+                  {c.remarks && <p>{c.remarks}</p>}
+                  {c.previousStatus && <p className="quiet">{t('Before this')}: {t(c.previousStatus)}</p>}
+                  <p className="quiet">{manual ? t('Updated') : t('Checked')}: {when(c.lastChecked)}</p>
+                </section>
+                <section>
+                  <h3>{t('WhatsApp')}</h3>
+                  <History c={c} />
+                </section>
+                <section className="row-tools">
+                  {c.samePhone > 1 && <button className="btn person-btn" onClick={() => onPerson(c.whatsapp)}>{t('All {n} applications', { n: c.samePhone })}</button>}
+                  <button className="btn" onClick={() => onEdit(c)}>{t('Edit customer')}</button>
+                  {chat
+                    ? <button className="btn" disabled={!c.found} onClick={() => onChat(c)}>{t('Send on WhatsApp')}</button>
+                    : <button className="btn" disabled={!c.found} onClick={() => onNotify(c)}>{t('Send update now')}</button>}
+                  <a className="btn" href={whatsappLink(c, provider)} target="_blank" rel="noopener noreferrer">{t('Open chat')}</a>
+                  <button className="btn stop" onClick={() => onDelete(c)}>{t('Delete customer')}</button>
+                </section>
+              </div>
           </div>
         </div>
-      )}
+      </div>
     </li>
   );
 }

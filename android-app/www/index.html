@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SP Calls</title>
+<style>
+/* The app's own start page: the loading screen, and the shop link when it's needed.
+   It looks like the website's loading screen, so going from one to the other is seamless. */
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: #1f2a1f; color: #f3edde; font: 400 16px/1.45 system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
+body { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 22px; padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); text-align: center; }
+.mark { position: relative; width: 96px; height: 96px; display: grid; place-items: center; }
+.mark img { position: relative; width: 88px; height: 88px; border-radius: 24px; box-shadow: 0 10px 30px -8px rgba(0, 0, 0, .5); }
+.ring { position: absolute; inset: 4px; border: 2px solid #d9c7a3; border-radius: 28px; opacity: 0; animation: ring 1.8s ease-out infinite; }
+.ring.r2 { animation-delay: .9s; }
+.title { margin: 0; font-size: 26px; font-weight: 700; color: #fff; }
+.sub { margin: 4px 0 0; color: #d9c7a3; font-size: 14px; }
+.bar { width: 160px; height: 4px; border-radius: 4px; overflow: hidden; background: rgba(217, 199, 163, .2); }
+.bar i { display: block; width: 40%; height: 100%; border-radius: 4px; background: #b08d57; animation: bar 1.2s ease-in-out infinite; }
+.line { margin: 0; min-height: 1.45em; color: rgba(243, 237, 222, .8); font-size: 15px; }
+body.asking .ring, body.asking .bar, body.asking .line { display: none; }
+form { display: none; width: min(380px, calc(100vw - 40px)); gap: 12px; padding: 20px; border-radius: 14px; background: #fffdf8; color: #0b0f0d; text-align: left; }
+body.asking form { display: grid; }
+form h1 { margin: 0; font-size: 20px; line-height: 1.25; color: #1f2a1f; }
+form p { margin: 0; color: #535e52; font-size: 14px; }
+label { font-weight: 600; font-size: 15px; }
+.row { display: flex; gap: 8px; }
+input { flex: 1; min-width: 0; min-height: 48px; padding: 10px 12px; border: 1px solid #d9d0bb; border-radius: 10px; background: #fff; color: #0b0f0d; font: inherit; font-size: 16px; }
+input:focus { outline: 2px solid #3e5a3f; outline-offset: 1px; }
+button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font: inherit; font-weight: 700; cursor: pointer; }
+.go { background: #1f2a1f; color: #fff; }
+.go:disabled { opacity: .6; }
+.paste { background: #f0e5cc; color: #6b5026; }
+.error { display: none; padding: 10px 12px; border-radius: 10px; background: #f6e1dc; color: #a8352c; font-size: 14px; }
+.error.on { display: block; }
+.lang { position: fixed; top: max(14px, env(safe-area-inset-top)); right: 16px; min-height: 36px; padding: 0 14px; border: 1px solid rgba(217, 199, 163, .45); border-radius: 999px; background: transparent; color: #fff; font-weight: 400; font-size: 14px; }
+@keyframes ring { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.55); opacity: 0; } }
+@keyframes bar { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+@media (prefers-reduced-motion: reduce) { .ring { animation: none; } .bar i { animation-duration: 3s; } }
+</style>
+</head>
+<body>
+<button class="lang" id="lang" type="button"></button>
+<div class="mark">
+  <span class="ring"></span><span class="ring r2"></span>
+  <img src="icon.png" alt="" width="88" height="88">
+</div>
+<div>
+  <p class="title" id="title">Calls</p>
+  <p class="sub">Sir Palaniyandavar Info Tech</p>
+</div>
+<div class="bar" aria-hidden="true"><i></i></div>
+<p class="line" id="line" role="status"></p>
+
+<form id="form" novalidate>
+  <h1 id="ask-title"></h1>
+  <p id="ask-help"></p>
+  <p class="error" id="error" role="alert"></p>
+  <label for="link" id="link-label"></label>
+  <div class="row">
+    <input id="link" type="url" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://….trycloudflare.com or 192.168…:3000">
+    <button class="paste" id="paste" type="button"></button>
+  </div>
+  <button class="go" id="go"></button>
+</form>
+
+<script>
+(function () {
+  var KEY = 'shop-link';
+  var store = {
+    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+  var ta = store.get('lang') === 'ta';
+  var TEXT = {
+    en: {
+      title: 'Calls', checking: 'Connecting to the shop computer…', opening: 'Loading your call list…',
+      askTitle: 'Connect to your shop', askHelp: 'Paste the shop link from sudo crm-link. On the shop Wi-Fi you can also use the laptop\'s address, like 192.168.0.104:3000.',
+      changeTitle: 'Change the shop link', label: 'Shop link', paste: 'Paste', go: 'Connect', going: 'Connecting…',
+      bad: 'Enter the shop link, or the laptop\'s Wi-Fi address like 192.168.0.104:3000',
+      self: 'localhost means this phone, not the laptop. Use the laptop\'s Wi-Fi address instead, like 192.168.0.104:3000. node server.js shows it when it starts.',
+      down: "Can't reach the shop computer at this link. Check that the laptop is on. The link changes when the laptop restarts, so you may need the new one.",
+      notCrm: 'This link works, but it is not the shop CRM. Check the link and try again.',
+      lang: 'தமிழ்',
+    },
+    ta: {
+      title: 'அழைப்புகள்', checking: 'கடை கணினியுடன் இணைக்கிறது…', opening: 'அழைப்புப் பட்டியல் ஏற்றப்படுகிறது…',
+      askTitle: 'உங்கள் கடையுடன் இணைக்கவும்', askHelp: 'sudo crm-link காட்டும் கடை இணைப்பை ஒட்டவும். கடை Wi-Fi இல் லேப்டாப்பின் முகவரியையும் பயன்படுத்தலாம், எ.கா. 192.168.0.104:3000.',
+      changeTitle: 'கடை இணைப்பை மாற்று', label: 'கடை இணைப்பு', paste: 'ஒட்டு', go: 'இணை', going: 'இணைக்கிறது…',
+      bad: 'கடை இணைப்பை அல்லது லேப்டாப்பின் Wi-Fi முகவரியை உள்ளிடவும், எ.கா. 192.168.0.104:3000',
+      self: 'localhost என்பது இந்தத் தொலைபேசி, லேப்டாப் அல்ல. லேப்டாப்பின் Wi-Fi முகவரியைப் பயன்படுத்தவும், எ.கா. 192.168.0.104:3000. node server.js தொடங்கும்போது அதைக் காட்டும்.',
+      down: 'இந்த இணைப்பில் கடை கணினியை அடைய முடியவில்லை. லேப்டாப் இயங்குகிறதா என்று பார்க்கவும். லேப்டாப் மீண்டும் தொடங்கும்போது இணைப்பு மாறும், எனவே புதிய இணைப்பு தேவைப்படலாம்.',
+      notCrm: 'இந்த இணைப்பு வேலை செய்கிறது, ஆனால் இது கடை CRM அல்ல. இணைப்பைச் சரிபார்த்து மீண்டும் முயலவும்.',
+      lang: 'English',
+    },
+  };
+  var T = TEXT[ta ? 'ta' : 'en'];
+  var $ = function (id) { return document.getElementById(id); };
+  document.documentElement.lang = ta ? 'ta' : 'en';
+  $('title').textContent = T.title;
+  $('ask-help').textContent = T.askHelp;
+  $('link-label').textContent = T.label;
+  $('paste').textContent = T.paste;
+  $('go').textContent = T.go;
+  $('lang').textContent = T.lang;
+  $('lang').onclick = function () { store.set('lang', ta ? 'en' : 'ta'); location.reload(); };
+
+  // Only the address of the site, whatever was pasted around it.
+  function clean(text) {
+    text = String(text || '').trim();
+    var found = text.match(/https?:\/\/[^\s"'<>]+/i);
+    if (found) text = found[0];
+    // A laptop on the shop Wi-Fi has a plain address like 192.168.0.104:3000, with no https.
+    else if (text && !/^https?:\/\//i.test(text)) text = (LOCAL.test(text) ? 'http://' : 'https://') + text;
+    try {
+      var u = new URL(text);
+      return /^https?:$/.test(u.protocol) && u.hostname.indexOf('.') > 0 ? u.origin : null;
+    } catch (e) { return null; }
+  }
+  var LOCAL = /^(\d{1,3}\.){3}\d{1,3}(:\d+)?(\/|$)/;
+  // "localhost" on a phone is the phone itself, never the laptop.
+  var SELF = /^(https?:\/\/)?(localhost|127\.\d+\.\d+\.\d+)(:\d+)?(\/|$)/i;
+
+  // The CRM answers /ping.json with its name, so a wrong or dead link is caught here.
+  function check(link) {
+    var stop = new AbortController();
+    var timer = setTimeout(function () { stop.abort(); }, 10000);
+    return fetch(link + '/ping.json', { cache: 'no-store', signal: stop.signal })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { clearTimeout(timer); return d && d.app === 'sp-crm' ? 'ok' : 'not-crm'; })
+      .catch(function () { clearTimeout(timer); return 'down'; });
+  }
+
+  function open(link) {
+    $('line').textContent = T.opening;
+    location.replace(link + '/calls');
+  }
+
+  function ask(message, changing) {
+    document.body.classList.add('asking');
+    $('ask-title').textContent = changing ? T.changeTitle : T.askTitle;
+    $('error').textContent = message || '';
+    $('error').classList.toggle('on', !!message);
+    $('link').value = store.get(KEY) || '';
+    $('go').disabled = false;
+    $('go').textContent = T.go;
+  }
+
+  $('paste').onclick = function () {
+    if (!navigator.clipboard || !navigator.clipboard.readText) return $('link').focus();
+    navigator.clipboard.readText().then(function (text) { $('link').value = text.trim(); }).catch(function () { $('link').focus(); });
+  };
+
+  $('form').onsubmit = function (e) {
+    e.preventDefault();
+    if (SELF.test($('link').value.trim())) return ask(T.self);
+    var link = clean($('link').value);
+    if (!link) return ask(T.bad);
+    $('go').disabled = true;
+    $('go').textContent = T.going;
+    check(link).then(function (result) {
+      if (result !== 'ok') return ask(result === 'down' ? T.down : T.notCrm);
+      store.set(KEY, link);
+      document.body.classList.remove('asking');
+      open(link);
+    });
+  };
+
+  var saved = store.get(KEY);
+  if (/[?&]change=1/.test(location.search) || !saved) {
+    ask('', !!saved);
+  } else {
+    $('line').textContent = T.checking;
+    check(saved).then(function (result) {
+      if (result === 'ok') open(saved);
+      else ask(result === 'down' ? T.down : T.notCrm);
+    });
+  }
+})();
+</script>
+</body>
+</html>

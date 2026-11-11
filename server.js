@@ -12,6 +12,10 @@ const users = require('./lib/users');
 const customers = require('./lib/customers');
 const aadhaar = require('./lib/aadhaar');
 const operators = require('./lib/operators');
+const epan = require('./lib/epan');
+const notices = require('./lib/notices');
+const ttdApi = require('./lib/ttd-api');
+const ttd = require('./lib/ttd');
 const activity = require('./lib/activity');
 const mail = require('./lib/mail');
 
@@ -100,6 +104,26 @@ async function notifyCustomer(c) {
 const isFinal = status => /approved|accepted|e-?roll updated|reject/i.test(status);
 const wasSent = (c, status) => (c.notifications || []).some(n => n.ok && ['live', 'chat'].includes(n.mode) && n.status === status);
 
+// An email from UTIITSL or Protean moved a PAN application on. A stage never goes
+// backwards, and only Approved puts the customer on the WhatsApp list.
+// False when no PAN customer of this user has the number.
+const PAN_STEPS = { Submitted: 1, 'In Process': 2, Approved: 3 };
+async function panEmail(owner, number, stage, note, date) {
+  const found = (await db.query("SELECT id FROM customers WHERE owner = $1 AND type = 'pan' AND application_no = $2", [owner, number])).rows[0];
+  if (!found) return false;
+  const customer = await customers.find(found.id);
+  const now = PAN_STEPS[customer.status] ?? (!customer.status ? 0 : isFinal(customer.status) ? 3 : 1);
+  if (PAN_STEPS[stage] <= now) return true; // already there, by hand or by an earlier email
+  setStatus(customer, stage, true);
+  customer.remarks = note;
+  customer.informed = false;
+  customer.notifyDue = isFinal(stage) && !wasSent(customer, stage);
+  await customers.saveStatus(customer);
+  const when = date ? new Date(date).toLocaleDateString('en-GB', { timeZone: TZ }) : '';
+  await activity.log({ actor: { userId: 'PAN email' }, action: 'customer.status', owner, detail: `${customer.name} (${number}): ${stage}${when ? `, email of ${when}` : ''}` });
+  return true;
+}
+
 // Looks up one customer, saves the result, and messages them on WhatsApp if the
 // status moved to a new stage.
 async function refreshAndSave(id, actor) {
@@ -119,9 +143,9 @@ async function refreshAndSave(id, actor) {
 // Sends the waiting manual updates one by one, saving after each so a failure
 // part way through can't send anyone a second message.
 const sendingUpdates = new Set(); // users whose updates are going out now
-async function sendWaitingUpdates(owner) {
+async function sendWaitingUpdates(owner, type) {
   const result = { sent: 0, failed: 0, test: 0, error: '' };
-  for (const id of await customers.waitingIds(owner)) {
+  for (const id of await customers.waitingIds(owner, type)) {
     const customer = await customers.find(id);
     if (!customer?.notifyDue) continue;
     const rec = await notifyCustomer(customer);
@@ -218,39 +242,61 @@ async function customersApi(req, res, url, user) {
   const record = (action, detail) => activity.log({ actor: user, action, owner: user.id, detail });
   const box = url.searchParams.get('type');
   const search = (url.searchParams.get('q') || '').trim().slice(0, 100);
+  const kind = ['New', 'Correction'].includes(url.searchParams.get('kind')) ? url.searchParams.get('kind') : null;
+  const agency = ['UTI', 'NSDL'].includes(url.searchParams.get('agency')) ? url.searchParams.get('agency') : null;
 
   if (req.method === 'GET' && !id) {
-    return send(res, 200, await customers.page(user.id, { type: box, view: url.searchParams.get('view'), q: search, page: url.searchParams.get('page') }));
+    return send(res, 200, await customers.page(user.id, { type: box, view: url.searchParams.get('view'), q: search, kind, agency, page: url.searchParams.get('page') }));
   }
-  if (req.method === 'GET' && id === 'summary') return send(res, 200, await customers.summary(user.id, box, search));
+  if (req.method === 'GET' && id === 'summary') return send(res, 200, await customers.summary(user.id, box, search, kind, agency));
   if (req.method === 'GET' && id === 'export') return send(res, 200, await customers.exportBox(user.id, box));
+  if (req.method === 'GET' && id === 'by-phone') {
+    const number = normalizeWhatsapp(url.searchParams.get('whatsapp'));
+    if (!number) return send(res, 400, { error: 'Enter a valid 10-digit WhatsApp number' });
+    return send(res, 200, await customers.byPhone(user.id, number));
+  }
 
   // Checks a customer's details, for adding and editing. Returns the cleaned values.
-  function details(type) {
+  // PAN also needs the agency: a new customer's from the form, an existing one's stays.
+  function details(type, keptAgency) {
     const provider = byId[type];
     const name = String(body.name || '').trim();
-    const applicationNo = String(body.applicationNo || '').trim().toUpperCase();
+    const typedNo = String(body.applicationNo || '').trim().toUpperCase();
+    const panAgency = type === 'pan' ? keptAgency || String(body.panAgency || '') : null;
+    if (type === 'pan' && !provider.agencies[panAgency]) throw httpError(400, 'Choose UTI or NSDL');
+    const rules = type === 'pan' ? { ...provider, ...provider.agencies[panAgency] } : provider;
+    const applicationNo = panAgency === 'UTI' ? typedNo.replace(/^U-/, '') : typedNo; // UTI numbers are kept without the U-
     const whatsappNo = normalizeWhatsapp(body.whatsapp);
     const aadhaarNo = String(body.aadhaar || '').replace(/[\s-]/g, '');
     if (!provider) throw httpError(400, 'Choose a service type');
     if (!name || name.length > 200) throw httpError(400, 'Name is required');
-    if (!isValidNumber(provider, applicationNo)) throw httpError(400, `Enter a valid ${provider.numberLabel.toLowerCase()}`);
+    if (!isValidNumber(rules, applicationNo)) throw httpError(400, `Enter a valid ${rules.numberLabel.toLowerCase()}`);
     if (!whatsappNo) throw httpError(400, 'Enter a valid 10-digit WhatsApp number');
     if (aadhaarNo && !aadhaar.isValid(aadhaarNo)) throw httpError(400, 'Enter a valid 12-digit Aadhaar number');
     if (aadhaarNo && !aadhaar.ready()) throw httpError(503, 'Aadhaar numbers cannot be saved until AADHAAR_KEY is set');
-    return { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider };
+    return { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider, panAgency };
   }
 
-  // Details only the PAN form has. Dates are kept as they appear on the receipt.
-  function panDetails(type) {
-    if (type !== 'pan') return {};
-    const panKind = String(body.panKind || '');
-    const birthDate = String(body.birthDate || '').trim();
+  // The application date is on every form. A new customer without one gets today's.
+  // New or Correction is on the PAN and TNPDS forms. Date of birth is PAN only.
+  // Dates are kept as they appear on the receipt.
+  function dateDetails(type, isNew) {
     const appliedOn = String(body.appliedOn || '').trim();
-    if (panKind && !['New', 'Correction'].includes(panKind)) throw httpError(400, 'Choose New or Correction');
-    if (birthDate && !isDate(birthDate)) throw httpError(400, 'Enter the date of birth as DD/MM/YYYY');
     if (appliedOn && !isDate(appliedOn)) throw httpError(400, 'Enter the application date as DD/MM/YYYY');
-    return { panKind, birthDate, appliedOn };
+    const dates = { appliedOn: appliedOn || (isNew ? new Date().toLocaleDateString('en-GB', { timeZone: TZ }) : '') };
+    if (type !== 'pan' && type !== 'smartcard') return dates;
+    const panKind = String(body.panKind || '');
+    if (panKind && !['New', 'Correction'].includes(panKind)) throw httpError(400, 'Choose New or Correction');
+    if (type !== 'pan') return { ...dates, panKind };
+    const birthDate = String(body.birthDate || '').trim();
+    if (birthDate && !isDate(birthDate)) throw httpError(400, 'Enter the date of birth as DD/MM/YYYY');
+    return { ...dates, panKind, birthDate };
+  }
+
+  // Stops the same application being entered twice, even in the wrong service.
+  async function refuseDuplicate(applicationNo, exceptId) {
+    const twin = await customers.sameNumber(user.id, applicationNo, exceptId);
+    if (twin) throw httpError(409, `${applicationNo} is already saved for ${twin.name} under ${byId[twin.type]?.name || twin.type}`);
   }
 
   async function chosenOperator() {
@@ -266,10 +312,11 @@ async function customersApi(req, res, url, user) {
     : {});
 
   if (req.method === 'POST' && !id) {
-    const { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider } = details(body.type);
+    const { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider, panAgency } = details(body.type);
+    await refuseDuplicate(applicationNo);
     const operatorId = await chosenOperator();
     const newId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const customer = await customers.add({ id: newId, owner: user.id, type: provider.id, name, applicationNo, whatsapp: whatsappNo, operatorId, ...panDetails(provider.id), ...aadhaarFields(newId, aadhaarNo) });
+    const customer = await customers.add({ id: newId, owner: user.id, type: provider.id, name, applicationNo, whatsapp: whatsappNo, operatorId, panAgency, ...dateDetails(provider.id, true), ...aadhaarFields(newId, aadhaarNo) });
     if (!customer) return send(res, 409, { error: `${applicationNo} is already saved under ${provider.name}` });
     await record('customer.add', label(customer));
     return send(res, 201, customer);
@@ -279,7 +326,7 @@ async function customersApi(req, res, url, user) {
     if (sendingUpdates.has(user.id)) return send(res, 409, { error: 'Updates are already being sent' });
     sendingUpdates.add(user.id);
     try {
-      const result = await sendWaitingUpdates(user.id);
+      const result = await sendWaitingUpdates(user.id, byId[body.type] ? body.type : null);
       await record('whatsapp.send', `${result.sent} sent, ${result.failed} failed`);
       return send(res, 200, result);
     } finally {
@@ -303,8 +350,9 @@ async function customersApi(req, res, url, user) {
   }
 
   if (req.method === 'POST' && action === 'edit') {
-    const { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider } = details(customer.type);
-    const updated = await customers.edit(customer, { name, applicationNo, whatsapp: whatsappNo, operatorId: await chosenOperator(), ...panDetails(customer.type), ...aadhaarFields(customer.id, aadhaarNo) });
+    const { name, applicationNo, whatsapp: whatsappNo, aadhaarNo, provider } = details(customer.type, customer.panAgency || 'UTI');
+    await refuseDuplicate(applicationNo, customer.id);
+    const updated = await customers.edit(customer, { name, applicationNo, whatsapp: whatsappNo, operatorId: await chosenOperator(), ...dateDetails(customer.type, false), ...aadhaarFields(customer.id, aadhaarNo) });
     if (!updated) return send(res, 409, { error: `${applicationNo} is already saved under ${provider.name}` });
     await record('customer.edit', label(updated));
     return send(res, 200, updated);
@@ -393,6 +441,31 @@ async function customersApi(req, res, url, user) {
   send(res, 405, { error: 'Not allowed' });
 }
 
+// The phone app: accepted and rejected customers to call, and a "Called" tick, which
+// is the same as Informed on the website. Nothing else can change from here.
+async function callsApi(req, res, url, user) {
+  const [, , , id, action] = url.pathname.split('/');
+  if (req.method === 'GET' && !id) {
+    const type = url.searchParams.get('type');
+    if (!byId[type]) return send(res, 400, { error: 'Unknown service type' });
+    const view = ['accepted', 'rejected', 'called'].includes(url.searchParams.get('view')) ? url.searchParams.get('view') : 'accepted';
+    const agency = type === 'pan' && ['UTI', 'NSDL'].includes(url.searchParams.get('agency')) ? url.searchParams.get('agency') : null;
+    const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
+    return send(res, 200, await customers.calls(user.id, { type, agency, view, q }));
+  }
+  if (req.method === 'POST' && id && action === 'called') {
+    const body = await readBody(req);
+    const customer = await customers.ownedBy(id, user.id);
+    if (!customer) return send(res, 404, { error: 'Customer not found' });
+    customer.informed = body.called === true;
+    customer.notifyDue = !customer.informed && !!customer.found && isFinal(customer.status || '') && !wasSent(customer, customer.status);
+    await customers.saveStatus(customer);
+    await activity.log({ actor: user, action: customer.informed ? 'customer.informed' : 'customer.not-informed', owner: user.id, detail: `${customer.name} (${customer.applicationNo}), from the phone app` });
+    return send(res, 200, { id: customer.id, informed: customer.informed });
+  }
+  send(res, 405, { error: 'Not allowed' });
+}
+
 // ---- Login, registration and the admin panel ----
 const COOKIE = 'crm_session';
 
@@ -414,7 +487,7 @@ const isDate = text => {
   return d.getUTCDate() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1;
 };
 
-const publicUser = u => ({ userId: u.userId, role: u.role });
+const publicUser = u => ({ userId: u.userId, role: u.role, app: u.app || null });
 
 // Through a tunnel every visitor arrives from this computer, and Cloudflare names
 // the real one. Only trusted when the request really came from the local tunnel.
@@ -522,9 +595,10 @@ async function authApi(req, res, url) {
     if (result.code === 401) users.countTry(key, 15 * 60 * 1000);
     if (result.error) return send(res, result.code, { error: result.error });
     users.clearTries(key);
-    res.setHeader('Set-Cookie', sessionCookie(await users.startSession(result.user.id), users.SESSION_MS));
-    await activity.log({ actor: result.user, action: 'login', owner: result.user.id });
-    return send(res, 200, { user: publicUser(result.user) });
+    const app = body.app === 'calls' ? 'calls' : null;
+    res.setHeader('Set-Cookie', sessionCookie(await users.startSession(result.user.id, app), app ? users.APP_SESSION_MS : users.SESSION_MS));
+    await activity.log({ actor: result.user, action: 'login', owner: result.user.id, detail: app ? 'Phone app' : undefined });
+    return send(res, 200, { user: publicUser({ ...result.user, app }) });
   }
 
   // The answer is the same whether or not the account exists, and comes before
@@ -552,6 +626,7 @@ async function authApi(req, res, url) {
   if (action === 'password') {
     const user = await users.userForToken(sessionToken(req));
     if (!user) return send(res, 401, { error: 'Please log in' });
+    if (user.app) return send(res, 403, { error: 'Change your password on the website' });
     const key = `password|${user.id}`;
     if (users.limited(key, 5)) return send(res, 429, { error: 'Too many wrong tries. Wait 15 minutes and try again.' });
     const body = await readBody(req);
@@ -579,6 +654,24 @@ async function adminApi(req, res, url, admin) {
   const [, , , section, id, action] = url.pathname.split('/'); // /api/admin/users/<id>/<action>
   if (req.method === 'GET' && section === 'activity') return send(res, 200, await activity.forAdmin(Number(url.searchParams.get('page'))));
   if (req.method === 'GET' && section === 'reports') return send(res, 200, await customers.adminReport());
+  if (section === 'notices') {
+    if (req.method === 'GET' && !id) return send(res, 200, await notices.forAdmin());
+    if (req.method !== 'POST') return send(res, 405, { error: 'Not allowed' });
+    if (!id) {
+      const form = await readBody(req);
+      const result = await notices.send(form);
+      if (result.error) return send(res, 400, { error: result.error });
+      await activity.log({ actor: admin, action: 'notice.send', target: form.to ? String(form.to).trim().toLowerCase() : null, detail: String(form.title || '').trim().slice(0, 120) });
+      return send(res, 201, result);
+    }
+    if (action === 'delete') {
+      const result = await notices.remove(id);
+      if (result.error) return send(res, result.code, { error: result.error });
+      await activity.log({ actor: admin, action: 'notice.delete' });
+      return send(res, 200, result);
+    }
+    return send(res, 404, { error: 'Not found' });
+  }
   if (section !== 'users') return send(res, 404, { error: 'Not found' });
   if (req.method === 'GET' && !id) return send(res, 200, await users.forAdmin());
   if (req.method !== 'POST') return send(res, 405, { error: 'Not allowed' });
@@ -595,7 +688,7 @@ async function adminApi(req, res, url, admin) {
 
 // The React site from client/, built by `npm run build`.
 const PUBLIC = path.join(__dirname, 'dist');
-const TYPES = { '.mjs': 'text/javascript; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2' };
+const TYPES = { '.mjs': 'text/javascript; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive' };
 
 const PAGES = {
   400: ['Bad request', 'The address could not be understood. Please check it and try again.'],
@@ -638,7 +731,7 @@ a{display:inline-block;padding:11px 20px;border-radius:8px;background:#1f2a1f;co
 }
 
 // Pages the React site handles; everything else must be a real file in dist.
-const SITE_PAGES = ['/', '/home', '/pan', '/login', '/register', '/forgot', '/reset', '/status', '/activity', '/reports', '/profile', '/admin', '/admin/activity', '/admin/reports', '/admin/profile'];
+const SITE_PAGES = ['/', '/home', '/operators', '/tnpds', '/voter', '/aadhaar', '/pan', '/pan/uti', '/pan/nsdl', '/login', '/register', '/forgot', '/reset', '/status', '/activity', '/reports', '/profile', '/admin', '/admin/activity', '/admin/reports', '/admin/profile', '/admin/notices', '/calls', '/ttd', '/ttd/book'];
 
 function serveStatic(req, res, pathname) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -706,6 +799,15 @@ const server = http.createServer(async (req, res) => {
       const user = await users.userForToken(sessionToken(req));
       if (!user) return send(res, 401, { error: 'Please log in' });
 
+      // The phone app only reads lists and marks calls. Hiding buttons isn't enough,
+      // so its session can't reach anything else, whoever sends the request.
+      if (user.app === 'calls') {
+        if (user.role !== 'user') return send(res, 403, { error: 'The admin account has no customers' });
+        if (url.pathname === '/api/providers' && req.method === 'GET') return send(res, 200, publicList());
+        if (url.pathname === '/api/calls' || url.pathname.startsWith('/api/calls/')) return await callsApi(req, res, url, user);
+        return send(res, 403, { error: 'The phone app can only show lists. Use the website for this.' });
+      }
+
       if (url.pathname.startsWith('/api/admin/') || url.pathname === '/api/admin') {
         return user.role === 'admin' ? await adminApi(req, res, url, user) : send(res, 403, { error: 'Admins only' });
       }
@@ -713,8 +815,21 @@ const server = http.createServer(async (req, res) => {
       if (user.role !== 'user') return send(res, 403, { error: 'The admin account has no customers' });
 
       if (url.pathname === '/api/providers') return send(res, 200, publicList());
+      // The shop's notice inbox: news, updates and price changes from the admin.
+      if (url.pathname === '/api/inbox' && req.method === 'GET') return send(res, 200, await notices.forUser(user.id));
+      if (url.pathname === '/api/inbox/read' && req.method === 'POST') {
+        const body = await readBody(req);
+        await notices.markRead(user.id, body.ids);
+        return send(res, 200, await notices.forUser(user.id));
+      }
       if (url.pathname === '/api/activity') return send(res, 200, await activity.forUser(user.id, Number(url.searchParams.get('page'))));
       if (url.pathname === '/api/reports') return send(res, 200, await customers.report(user.id));
+      if (url.pathname === '/api/reports/operators') return send(res, 200, await customers.operatorReport(user.id));
+      if (url.pathname === '/api/nav-counts') return send(res, 200, await customers.navCounts(user.id));
+      if (url.pathname === '/api/dashboard') {
+        const recent = (await activity.forUser(user.id, 1)).items.slice(0, 6);
+        return send(res, 200, { ...await customers.dashboard(user.id), recent, ttd: await ttd.summary(user.id) });
+      }
 
       // /api/status?type=certificate&no=TN-...  (type defaults to certificate)
       if (url.pathname === '/api/status') {
@@ -732,12 +847,16 @@ const server = http.createServer(async (req, res) => {
           if (started) runAllChecks('Manual', user.id).catch(e => console.error('[auto-check]', e.message));
           return send(res, started ? 202 : 409, started ? { ok: true } : { error: 'A check is already running' });
         }
-        return send(res, 200, { times: CHECK_TIMES, timezone: TZ, gapSeconds: GAP_MS / 1000, nextRun: nextRunLabel(), running: progress?.owners[user.id] || null, lastRun: await customers.lastRun(user.id), whatsapp: whatsapp.mode() });
+        return send(res, 200, { times: CHECK_TIMES, timezone: TZ, gapSeconds: GAP_MS / 1000, nextRun: nextRunLabel(), running: progress?.owners[user.id] || null, lastRun: await customers.lastRun(user.id), whatsapp: whatsapp.mode(), epan: epan.status() });
       }
 
       if (url.pathname === '/api/reset-data' && req.method === 'POST') return await resetData(req, res, user);
       if (url.pathname.startsWith('/api/customers')) return await customersApi(req, res, url, user);
+      if (url.pathname === '/api/calls' || url.pathname.startsWith('/api/calls/')) return await callsApi(req, res, url, user);
       if (url.pathname === '/api/operators' || url.pathname.startsWith('/api/operators/')) return await operatorsApi(req, res, url, user);
+      if (url.pathname === '/api/ttd' || url.pathname.startsWith('/api/ttd/')) {
+        return await ttdApi(req, res, url, user, { send, readBody, httpError, normalizeWhatsapp, activity, users, operators });
+      }
 
       return send(res, 404, { error: 'Not found' });
     } catch (e) {
@@ -755,6 +874,11 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
+  // The Android app checks a shop link with this before opening it. Nothing private.
+  if (url.pathname === '/ping.json') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    return res.end('{"app":"sp-crm"}');
+  }
   if (url.pathname === '/sitemap.xml') return sitemap(res);
   if (url.pathname === '/robots.txt') return robots(res);
 
@@ -775,6 +899,7 @@ db.setup().then(() => {
     if (!process.env.HOST) for (const address of networkAddresses()) console.log(`Other devices on your network: http://${address}:${PORT}`);
     if (!await users.hasAdmin()) console.log('No admin yet. Create one with: node create-admin.js');
     if (!fs.existsSync(path.join(PUBLIC, 'index.html'))) console.log('The website is not built yet. Run: npm run build');
+    if (epan.start(panEmail)) console.log('Reading e-PAN emails every few minutes');
   });
 }).catch(e => {
   console.error(`Could not connect to the database: ${e.message}`);

@@ -62,7 +62,7 @@ export function Login({ admin, onLogin }) {
     setError('');
     try {
       const { user } = await api('auth/login', { method: 'POST', body: { ...form, area: admin ? 'admin' : 'user' } });
-      if (!admin) window.history.replaceState(null, '', '/');
+      if (!admin) window.history.replaceState(null, '', '/home');
       onLogin(user);
     } catch (err) {
       showError(err, t('Could not log in'));

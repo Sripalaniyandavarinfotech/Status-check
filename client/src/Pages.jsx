@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Pager } from './Fields.jsx';
 import Header from './Header.jsx';
+import { SkeletonTable } from './Skeleton.jsx';
 import { t } from './i18n.js';
 import { api, monthName, showError, when } from './lib.js';
 
-const ACTIONS = {
+export const ACTIONS = {
   login: 'Logged in',
   'password.own': 'Changed own password',
   'customer.add': 'Added a customer',
@@ -31,6 +32,17 @@ const ACTIONS = {
   'user.suspend': 'Suspended a user',
   'user.activate': 'Activated a user',
   'user.password': "Changed a user's password",
+  'notice.send': 'Sent a notice',
+  'ttd.add': 'Added a TTD booking',
+  'ttd.edit': 'Edited a TTD booking',
+  'ttd.delete': 'Deleted a TTD booking',
+  'ttd.booked': 'Marked a TTD booking as booked',
+  'ttd.failed': 'Marked a TTD booking as failed',
+  'ttd.ready': 'Put a TTD booking back to ready',
+  'ttd.ticket': 'Saved a TTD ticket',
+  'ttd.sent': 'Sent a TTD ticket on WhatsApp',
+  'ttd.sheet': 'Opened TTD booking mode',
+  'notice.delete': 'Deleted a notice',
 };
 
 function Frame({ user, onLogout, title, children }) {
@@ -56,6 +68,7 @@ export function ActivityPage({ user, onLogout }) {
 
   return (
     <Frame user={user} onLogout={onLogout} title={t('Activity')}>
+      {!data && <SkeletonTable rows={8} cols={3} />}
       {data && (data.items.length ? (
         <>
           <div className="table-box">
@@ -154,6 +167,59 @@ export function ServicesTable({ services, nameOf }) {
 }
 
 // The admin's totals. A user's own numbers are on their Profile page.
+const OPERATOR_COLUMNS = [
+  ['total', 'Total'],
+  ['thisMonth', 'This month'],
+  ['progress', 'In progress'],
+  ['approved', 'Approved'],
+  ['rejected', 'Rejected'],
+  ['new', 'No status yet'],
+  ['informed', 'Informed'],
+  ['sent', 'WhatsApp sent'],
+];
+
+export function OperatorStatsPage({ user, onLogout }) {
+  const [rows, setRows] = useState(null);
+
+  useEffect(() => { api('reports/operators').then(setRows).catch(showError); }, []);
+
+  const sum = key => rows.reduce((n, r) => n + r[key], 0);
+
+  return (
+    <Frame user={user} onLogout={onLogout} title={t('Operator stats')}>
+      {!rows && <SkeletonTable rows={4} cols={9} />}
+      {rows && (rows.length ? (
+        <div className="table-box">
+          <table className="users">
+            <thead>
+              <tr>
+                <th scope="col">{t('Operator')}</th>
+                {OPERATOR_COLUMNS.map(([key, label]) => <th key={key} scope="col" className="count">{t(label)}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.name ?? 'none'}>
+                  <th scope="row">{r.name ?? t('No operator')}</th>
+                  {OPERATOR_COLUMNS.map(([key]) => <td key={key} className="count">{r[key]}</td>)}
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th scope="row">{t('Total')}</th>
+                {OPERATOR_COLUMNS.map(([key]) => <td key={key} className="count">{sum(key)}</td>)}
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      ) : (
+        <div className="empty"><p>{t('Add your operators in Profile to see their stats here.')}</p></div>
+      ))}
+    </Frame>
+  );
+}
+
 export function ReportsPage({ user, onLogout }) {
   const [data, setData] = useState(null);
 
@@ -161,6 +227,7 @@ export function ReportsPage({ user, onLogout }) {
 
   return (
     <Frame user={user} onLogout={onLogout} title={t('Reports')}>
+      {!data && <SkeletonTable rows={4} cols={6} />}
       {data && (
         <div className="reports">
           <section>

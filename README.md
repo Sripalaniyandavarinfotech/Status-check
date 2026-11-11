@@ -24,9 +24,32 @@ To reach the site from anywhere, host it on a server with a domain and HTTPS.
 
 ## PAN
 
-PAN has its own page at `/pan`, from the side bar, for applications made through UTIITSL. It works like the other services, with stages set by hand, and **Open UTIITSL** opens the tracking page.
+Each service opens from the side bar. PAN has two parts, **UTI** at `/pan/uti` and **NSDL** (Protean) at `/pan/nsdl`, each with its own number format and tracking site. It works like the other services, with stages set by hand, and the **Open UTIITSL** or **Open Protean** button opens that agency's tracking page.
 
-**Upload receipt** in the Add PAN customer form reads a UTIITSL PDF receipt and fills in the type, name, date of birth, mobile number, application number and application date. The PDF is read in the browser: it isn't sent to the server or saved. Check the details before saving. It works on PDFs with real text, not scanned ones.
+**Upload receipt** in the Add PAN customer form reads a UTIITSL PDF receipt, chosen or dragged in, and fills in the type, name, date of birth, mobile number, application number and application date. The PDF is read in the browser: it isn't sent to the server or saved. Check the details before saving. It works on PDFs with real text, not scanned ones.
+
+## e-PAN emails
+
+The site can read PAN emails and move the matching PAN customer on. It reads only the sender and subject, opens the mailbox read-only, and never downloads the attachments.
+
+| Sender | Subject | Stage |
+|---|---|---|
+| `epan.service@utiitsl.com` | Your PAN is allotted … Coupon number:- A… | Approved |
+| `noreply@reprint.proteantech.in` | PAN Application - ack. No. N- … | Submitted |
+| `noreply@epan.proteantech.in` | Your PAN application … dated … | In Process |
+| `noreply@epan.proteantech.in` | PAN allotment letter for your PAN application … | Approved |
+
+A stage never goes backwards, and only Approved puts the customer on the WhatsApp list.
+
+Use a mailbox that receives only these emails, so the site never has access to your other mail:
+
+1. Create a new Gmail account for this.
+2. Turn on 2-Step Verification for it, then create an **app password** at <https://myaccount.google.com/apppasswords>.
+3. In your main Gmail, open Settings, then **Forwarding and POP/IMAP**, and add the new address as a forwarding address. Gmail emails a confirmation code to the new account.
+4. In your main Gmail, create a filter with **From** set to `epan.service@utiitsl.com OR noreply@epan.proteantech.in OR noreply@reprint.proteantech.in`, set to **forward** to the new address.
+5. In `.env`, fill in `EPAN_EMAIL`, `EPAN_APP_PASSWORD` and `EPAN_USER` (your CRM user ID), then restart the server.
+
+The PAN page then shows when the mailbox was last read, and lists any allotted numbers that aren't in your customer list.
 
 ## Operators
 

@@ -1,0 +1,16 @@
+{
+  "appId": "in.sirpalaniyandavar.calls",
+  "appName": "SP Calls",
+  "webDir": "www",
+  "appendUserAgent": "SPCallsApp",
+  "backgroundColor": "#1f2a1f",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true,
+    "errorPath": "index.html",
+    "allowNavigation": ["*.trycloudflare.com", "192.168.*.*", "10.*.*.*", "172.*.*.*"]
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

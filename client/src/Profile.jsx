@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import Dialog from './Dialog.jsx';
 import { Field, PasswordField } from './Fields.jsx';
 import Header from './Header.jsx';
+import { SkeletonTiles } from './Skeleton.jsx';
 import { plural, t } from './i18n.js';
 import { api, monthName, phone, showError, shortMonth } from './lib.js';
-import { MonthsTable, ServicesTable } from './Pages.jsx';
+import { ServicesTable } from './Pages.jsx';
 
 // Validated together for colour blindness. In this order: see the legend below.
 const STAGES = [
@@ -278,8 +279,9 @@ export default function ProfilePage({ user, onLogout }) {
 
   return (
     <>
-      <Header user={user} onLogout={onLogout} />
+      <Header user={user} onLogout={onLogout} noNav />
       <main className="wrap profile">
+        <a className="back-link" href={admin ? '/admin' : '/'}>{t(admin ? 'Back to users' : 'Back to customers')}</a>
         <section className="lead profile-head">
           <span className="profile-icon" aria-hidden="true">{user.userId[0].toUpperCase()}</span>
           <div>
@@ -292,6 +294,7 @@ export default function ProfilePage({ user, onLogout }) {
           </div>
         </section>
 
+        {!report && !admin && <SkeletonTiles />}
         {report && (
           <>
             <section aria-label={t('Summary')} className="tiles">
@@ -309,7 +312,6 @@ export default function ProfilePage({ user, onLogout }) {
             </div>
 
             {services.length > 0 && <ServicesTable services={services} nameOf={nameOf} />}
-            <MonthsTable months={report.months} />
           </>
         )}
 

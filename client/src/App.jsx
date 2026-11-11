@@ -4,8 +4,10 @@ import CustomerRow from './CustomerRow.jsx';
 import Dialog from './Dialog.jsx';
 import { Pager, SearchBox } from './Fields.jsx';
 import Header from './Header.jsx';
+import PersonApplications from './PersonApplications.jsx';
+import { SkeletonRows, SkeletonTitle } from './Skeleton.jsx';
 import { plural, t } from './i18n.js';
-import { api, downloadCsv, kind, showError, whatsappLink, whatsappText, when } from './lib.js';
+import { api, downloadCsv, kind, showError, whatsappLink, whatsappText, when, withAgency } from './lib.js';
 
 const VIEWS = [
   { id: 'all', label: 'All' },
@@ -30,8 +32,19 @@ function headline(s) {
   return t('{applications} on file, none in progress', { applications: plural(s.total, 'application') });
 }
 
-// `only` shows one service on its own page. Services with their own page stay off the main one.
-export default function App({ user, onLogout, only }) {
+// Each service has its own address, from the side bar.
+// PAN has two places, one for each agency.
+const PATHS = { certificate: '/', smartcard: '/tnpds', voter: '/voter', aadhaar: '/aadhaar' };
+const PAN_PATHS = { UTI: '/pan/uti', NSDL: '/pan/nsdl' };
+const HAS_KIND = ['pan', 'smartcard']; // services with New and Correction applications
+const pathOf = (type, agency) => (type === 'pan' ? PAN_PATHS[agency] || PAN_PATHS.UTI : PATHS[type]);
+const placeAt = path => {
+  if (path === '/pan' || path === PAN_PATHS.UTI) return { type: 'pan', agency: 'UTI' };
+  if (path === PAN_PATHS.NSDL) return { type: 'pan', agency: 'NSDL' };
+  return { type: Object.keys(PATHS).find(id => PATHS[id] === path) || '', agency: 'UTI' };
+};
+
+export default function App({ user, onLogout }) {
   const [list, setList] = useState(null); // the open page of customers
   const [summary, setSummary] = useState(null); // the counts around it
   const [providers, setProviders] = useState([]);
@@ -39,7 +52,9 @@ export default function App({ user, onLogout, only }) {
   const [schedule, setSchedule] = useState(null);
   const [offline, setOffline] = useState(false);
   const [view, setView] = useState('all');
-  const [service, setService] = useState('');
+  const [service, setService] = useState(() => placeAt(window.location.pathname).type);
+  const [agency, setAgency] = useState(() => placeAt(window.location.pathname).agency); // for PAN
+  const [kindFilter, setKindFilter] = useState(''); // '' | 'New' | 'Correction'
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState(''); // `query` once typing has paused
@@ -55,10 +70,9 @@ export default function App({ user, onLogout, only }) {
   const latest = useRef(0);
   const moved = useRef(''); // the search that last chose a box
 
-  const shown = providers.filter(p => (only ? p.id === only : !p.separatePage));
-  const shownIds = shown.map(p => p.id);
-  const box = service || shown[0]?.id; // the service box that is open
-  const boxProvider = providers.find(p => p.id === box);
+  const box = service || providers[0]?.id; // the service that is open
+  const panAgency = box === 'pan' ? agency : '';
+  const boxProvider = withAgency(providers.find(p => p.id === box), panAgency);
   const providerOf = c => providers.find(p => p.id === c.type);
   const refresh = useCallback(() => setReload(n => n + 1), []);
 
@@ -92,7 +106,9 @@ export default function App({ user, onLogout, only }) {
     const ask = ++latest.current;
     const q = encodeURIComponent(search);
     const type = encodeURIComponent(box);
-    Promise.all([api(`customers?type=${type}&view=${view}&q=${q}&page=${page}`), api(`customers/summary?type=${type}&q=${q}`)])
+    const kind = HAS_KIND.includes(box) ? kindFilter : '';
+    const ag = box === 'pan' ? agency : '';
+    Promise.all([api(`customers?type=${type}&view=${view}&q=${q}&kind=${kind}&agency=${ag}&page=${page}`), api(`customers/summary?type=${type}&q=${q}&kind=${kind}&agency=${ag}`)])
       .then(([l, s]) => {
         if (ask !== latest.current) return;
         setList(l);
@@ -101,16 +117,21 @@ export default function App({ user, onLogout, only }) {
         // A new search with nothing here opens the place that has its results.
         if (search && moved.current !== search) {
           moved.current = search;
-          const here = s.boxes.find(b => b.type === box)?.matches;
-          const other = s.boxes.find(b => b.matches && providers.find(p => p.id === b.type && (only ? p.id === only : !p.separatePage)))?.type;
+          // PAN counts as two places, one for each agency.
+          const places = [
+            ...s.boxes.filter(b => b.type !== 'pan').map(b => ({ type: b.type, agency: 'UTI', matches: b.matches })),
+            ...Object.values(s.agencies || {}).map(a => ({ type: 'pan', agency: a.agency, matches: a.matches })),
+          ];
+          const here = places.find(p => p.type === box && (box !== 'pan' || p.agency === agency))?.matches;
+          const other = places.find(p => p.matches);
           if (!l.total && (here || other)) {
             setView('all');
-            if (!here) setService(other);
+            if (!here) { setService(other.type); setAgency(other.agency); }
           }
         }
       })
       .catch(() => { if (ask === latest.current) setOffline(true); });
-  }, [box, view, search, page, reload]);
+  }, [box, agency, view, search, page, reload, kindFilter]);
 
   // Follow a running check closely; otherwise look for scheduled runs once a minute.
   const running = !!schedule?.running;
@@ -122,6 +143,28 @@ export default function App({ user, onLogout, only }) {
     const timer = setInterval(tick, running ? 3000 : 60000);
     return () => { clearInterval(timer); if (running) refresh(); };
   }, [running, loadSchedule, refresh]);
+
+  // Keeps the address and the Back button in step with the open service.
+  useEffect(() => {
+    const target = box && pathOf(box, agency);
+    if (!target || window.location.pathname === target) return;
+    const known = placeAt(window.location.pathname).type && window.location.pathname !== '/pan';
+    if (known) window.history.pushState(null, '', target);
+    else window.history.replaceState(null, '', target);
+  }, [box, agency]);
+
+  useEffect(() => {
+    const back = () => {
+      const place = placeAt(window.location.pathname);
+      setService(place.type || 'certificate');
+      setAgency(place.agency);
+      setView('all');
+      setKindFilter('');
+      setPage(1);
+    };
+    window.addEventListener('popstate', back);
+    return () => window.removeEventListener('popstate', back);
+  }, []);
 
   // Press / to jump to the search box.
   useEffect(() => {
@@ -135,7 +178,7 @@ export default function App({ user, onLogout, only }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const openBox = id => { setService(id); setView('all'); setPage(1); };
+  const openBox = (id, ag = 'UTI') => { if (id !== box || ag !== agency) setList(null); setService(id); setAgency(ag); setView('all'); setKindFilter(''); setPage(1); window.scrollTo(0, 0); };
   const openView = id => { setView(id); setPage(1); };
 
   async function setStage(c, status) {
@@ -156,7 +199,7 @@ export default function App({ user, onLogout, only }) {
 
   // Opens the official page with the number on the clipboard, ready to paste.
   function openSite(c) {
-    window.open(providerOf(c).officialUrl, '_blank', 'noopener');
+    window.open(withAgency(providerOf(c), c.panAgency).officialUrl, '_blank', 'noopener');
     navigator.clipboard?.writeText(c.applicationNo)
       .then(() => toast(t('{number} copied. Paste it on the website.', { number: c.applicationNo })))
       .catch(() => {});
@@ -177,6 +220,7 @@ export default function App({ user, onLogout, only }) {
   async function addCustomer(form) {
     const saved = await api('customers', { method: 'POST', body: form });
     setService(saved.type); // show the box the new customer went into
+    if (saved.panAgency) setAgency(saved.panAgency);
     setView('all');
     setPage(1);
     refresh();
@@ -244,7 +288,7 @@ export default function App({ user, onLogout, only }) {
   async function sendAll() {
     setSending(true);
     try {
-      const r = await api('customers/send-updates', { method: 'POST' });
+      const r = await api('customers/send-updates', { method: 'POST', body: { type: box } });
       refresh();
       setDialog(null);
       if (r.test) showError({ message: t("WhatsApp isn't connected yet. {customers} still waiting.", { customers: plural(r.test, 'customer') }) }, t('Nothing sent'));
@@ -267,7 +311,7 @@ export default function App({ user, onLogout, only }) {
 
   async function download() {
     try {
-      downloadCsv(await api(`customers/export?type=${encodeURIComponent(box)}`), providers, `${boxProvider.shortName}-customers.csv`);
+      downloadCsv((await api(`customers/export?type=${encodeURIComponent(box)}`)).filter(c => !panAgency || c.panAgency === panAgency), providers, `${boxProvider.shortName}-customers.csv`);
     } catch (e) {
       showError(e);
     }
@@ -317,18 +361,42 @@ export default function App({ user, onLogout, only }) {
     setDialog({ kind: 'send', list: waiting });
   }
 
+  // Every application under one number, across services.
+  const showPerson = useCallback(number => setDialog({ kind: 'person', whatsapp: number }), []);
+  const closeDialog = useCallback(() => setDialog(null), []);
+
+  // Opens one of those applications in its own service, found by its number.
+  function openApplication(c) {
+    setDialog(null);
+    openBox(c.type, c.panAgency || 'UTI');
+    setQuery(c.applicationNo);
+  }
+
+  // A search that is a phone number can show that person's applications everywhere.
+  const searchedPhone = (() => {
+    let d = search.replace(/\D/g, '');
+    if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+    return /^[6-9]\d{9}$/.test(d) ? `91${d}` : '';
+  })();
+
   const chat = !!schedule && schedule.whatsapp !== 'live';
   const r = schedule?.lastRun;
   const progress = schedule?.running;
-  // Counts for just the services on this page.
-  const scope = (summary?.boxes || []).filter(b => shownIds.includes(b.type)).reduce((n, b) => ({ total: n.total + b.total, due: n.due + b.due, progress: n.progress + b.progress }), { total: 0, due: 0, progress: 0 });
-  const waiting = (summary?.waiting || []).filter(c => shownIds.includes(c.type));
-  const boxInfo = id => summary?.boxes.find(b => b.type === id) || { total: 0, due: 0, matches: 0 };
-  const open = boxInfo(box);
+  // The top line and the send bar are about the open service only.
+  const waiting = (summary?.waiting || []).filter(c => c.type === box && (!panAgency || c.panAgency === panAgency));
+  const empty = { total: 0, due: 0, progress: 0, matches: 0 };
+  const boxInfo = id => summary?.boxes.find(b => b.type === id) || empty;
+  const agencyInfo = ag => summary?.agencies?.[ag] || empty;
+  const open = panAgency ? agencyInfo(panAgency) : boxInfo(box);
+  const scope = open;
+  const counts = Object.fromEntries([
+    ...providers.filter(p => PATHS[p.id]).map(p => [PATHS[p.id], { n: boxInfo(p.id).matches, due: boxInfo(p.id).due }]),
+    ...Object.entries(PAN_PATHS).map(([ag, path]) => [path, { n: agencyInfo(ag).matches, due: agencyInfo(ag).due }]),
+  ]);
 
   return (
     <>
-      <Header user={user} onLogout={onLogout}>
+      <Header user={user} onLogout={onLogout} current={pathOf(box, agency)} counts={counts} onNav={path => { const place = placeAt(path); openBox(place.type, place.agency); }}>
         {schedule && <span className={`link-state ${schedule.whatsapp}`}>{t(WHATSAPP_NOTE[schedule.whatsapp])}</span>}
       </Header>
 
@@ -336,33 +404,38 @@ export default function App({ user, onLogout, only }) {
         {offline && <p className="offline" role="alert">{t("The CRM server isn't responding. Check that node server.js is running in your terminal.")}</p>}
 
         <section className="lead">
-          <h1>{summary ? headline(scope) : t('Loading customers…')}</h1>
+          <h1>{summary && list ? headline(scope) : <SkeletonTitle />}</h1>
           <button className="btn primary" onClick={() => setDialog({ kind: 'add' })} disabled={!boxProvider}>{boxProvider ? t('Add {service} customer', { service: t(boxProvider.shortName) }) : t('Add customer')}</button>
         </section>
 
         <SearchBox inputRef={searchRef} label={t('Search customers')} placeholder={t('Search name or number (press /)')} value={query} onChange={e => setQuery(e.target.value)} />
 
-        {!only && <nav className="boxes" aria-label={t('Choose a service')}>
-          {shown.map(p => {
-            const info = boxInfo(p.id);
-            return (
-              <button key={p.id} className={p.id === box ? 'on' : ''} aria-pressed={p.id === box} onClick={() => openBox(p.id)}>
-                <span className="box-name">{t(p.shortName)}</span>
-                <b>{info.matches}</b>
-                <span className="box-note">{info.due ? t('{n} waiting to send', { n: info.due }) : plural(info.total, 'application')}</span>
-              </button>
-            );
-          })}
-        </nav>}
 
         <nav className="views" aria-label={t('Filter by status')}>
           {VIEWS.map(v => (
             <button key={v.id} className={view === v.id ? 'on' : ''} aria-pressed={view === v.id} onClick={() => openView(v.id)}>
-              <b>{summary?.views[v.id] ?? 0}</b>
+              <b>{list ? summary?.views[v.id] ?? 0 : '…'}</b>
               {t(v.label)}
             </button>
           ))}
         </nav>
+
+        {box === 'pan' && schedule?.epan?.on && (
+          <section className="auto">
+            <div>
+              <strong>{schedule.epan.lastError ? t('e-PAN emails could not be read') : t('Reading e-PAN emails from {email}', { email: schedule.epan.email })}</strong>
+              <p className="quiet">
+                {schedule.epan.lastError
+                  ? t(schedule.epan.lastError)
+                  : t('Every {n} minutes. UTIITSL and Protean emails move the matching customer to Submitted, In Process or Approved.', { n: schedule.epan.minutes })}
+                {schedule.epan.lastRun && ` ${t('Last read {when}.', { when: when(schedule.epan.lastRun) })}`}
+              </p>
+              {schedule.epan.unmatched?.length > 0 && (
+                <p className="warn">{t('Emails for numbers not in your list: {numbers}', { numbers: schedule.epan.unmatched.join(', ') })}</p>
+              )}
+            </div>
+          </section>
+        )}
 
         {schedule && boxProvider?.ready && (
           <section className="auto">
@@ -381,8 +454,29 @@ export default function App({ user, onLogout, only }) {
         )}
 
         <div className="tools">
+          {HAS_KIND.includes(box) && (
+            <fieldset className="pick kind-filter">
+              <legend className="hide">{t('Application type')}</legend>
+              <div>
+                {[['', 'All', 'all'], ['New', 'New', 'New'], ['Correction', 'Correction', 'Correction']].map(([value, label, key]) => (
+                  <label key={label}>
+                    <input type="radio" name="kind-filter" checked={kindFilter === value} onChange={() => { setKindFilter(value); setPage(1); }} />
+                    <span>{t(label)} ({summary?.kinds?.[key] ?? 0})</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
           <button className="btn" disabled={!open.total} onClick={download}>{t('Download CSV')}</button>
         </div>
+
+        {searchedPhone && (
+          <button className="person-bar" onClick={() => showPerson(searchedPhone)}>
+            {t('See all applications for {phone} in every service', { phone: `+91 ${searchedPhone.slice(2, 7)} ${searchedPhone.slice(7)}` })}
+          </button>
+        )}
+
+        {!list && <SkeletonRows />}
 
         {list && (list.items.length ? (
           <>
@@ -408,6 +502,7 @@ export default function App({ user, onLogout, only }) {
                   onAddNote={addNote}
                   onRemoveNote={removeNote}
                   onRemoveAadhaar={x => setDialog({ kind: 'aadhaar', customer: x })}
+                  onPerson={showPerson}
                 />
               ))}
             </ul>
@@ -433,9 +528,9 @@ export default function App({ user, onLogout, only }) {
         </div>
       )}
 
-      {dialog?.kind === 'add' && <AddCustomer key={box} provider={boxProvider} operators={operators} onSave={addCustomer} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'add' && <AddCustomer key={`${box}-${panAgency}`} provider={boxProvider} agency={panAgency} operators={operators} onSave={addCustomer} onClose={() => setDialog(null)} />}
 
-      {dialog?.kind === 'edit' && <AddCustomer provider={providerOf(dialog.customer)} operators={operators} customer={dialog.customer} onSave={form => editCustomer(dialog.customer, form)} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'edit' && <AddCustomer provider={withAgency(providerOf(dialog.customer), dialog.customer.panAgency)} agency={dialog.customer.panAgency || ''} operators={operators} customer={dialog.customer} onSave={form => editCustomer(dialog.customer, form)} onClose={() => setDialog(null)} />}
 
       {dialog?.kind === 'send' && (
         <Dialog title={t('Send WhatsApp to {customers}', { customers: plural(chat ? dialog.list.length : scope.due, 'customer') })} onClose={() => setDialog(null)}>
@@ -470,6 +565,8 @@ export default function App({ user, onLogout, only }) {
           </div>
         </Dialog>
       )}
+
+      {dialog?.kind === 'person' && <PersonApplications whatsapp={dialog.whatsapp} providers={providers} onOpen={openApplication} onClose={closeDialog} />}
 
       {dialog?.kind === 'aadhaar' && (
         <Dialog title={t('Remove this Aadhaar number?')} onClose={() => setDialog(null)}>

@@ -62,6 +62,12 @@ export const shortMonth = ym => new Date(`${ym}-15`).toLocaleString(LOCALE, { mo
 
 export const monthName = ym => new Date(`${ym}-15`).toLocaleString(LOCALE, { month: 'long', year: 'numeric' });
 
+// The service's details, with the PAN agency's own number rules and website on top.
+export const withAgency = (provider, agency) => (provider?.agencies?.[agency] ? { ...provider, ...provider.agencies[agency] } : provider);
+
+// Today in India, as DD/MM/YYYY.
+export const today = () => new Date().toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata' });
+
 // Customers always get Tamil, whichever language the staff member's site is in.
 export function whatsappText(c, provider) {
   const service = tamil(provider?.shortName || c.service || c.type);
@@ -95,7 +101,7 @@ export async function copyText(text) {
 }
 
 export function downloadCsv(customers, providers, fileName) {
-  const cols = ['name', 'type', 'operatorName', 'panKind', 'applicationNo', 'whatsapp', 'birthDate', 'appliedOn', 'service', 'status', 'remarks', 'lastChecked', 'createdAt'];
+  const cols = ['name', 'type', 'panAgency', 'operatorName', 'panKind', 'applicationNo', 'whatsapp', 'birthDate', 'appliedOn', 'service', 'status', 'remarks', 'lastChecked', 'createdAt'];
   const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const name = c => providers.find(p => p.id === c.type)?.name || c.type;
   const lines = [cols.join(','), ...customers.map(c => cols.map(k => cell(k === 'type' ? name(c) : c[k])).join(','))];

@@ -19,8 +19,8 @@ for (const p of providers) {
 }
 
 // Public info for the browser (no functions).
-const publicList = () => providers.map(({ id, name, shortName, numberLabel, placeholder, pattern, page, ready, manual, officialUrl, openLabel, stages, separatePage }) =>
-  ({ id, name, shortName: shortName || name, numberLabel, placeholder, pattern, page, ready: !!ready, manual: !!manual, officialUrl, openLabel, stages, separatePage: !!separatePage }));
+const publicList = () => providers.map(({ id, name, shortName, numberLabel, placeholder, pattern, page, ready, manual, officialUrl, openLabel, stages, agencies }) =>
+  ({ id, name, shortName: shortName || name, numberLabel, placeholder, pattern, page, ready: !!ready, manual: !!manual, officialUrl, openLabel, stages, agencies }));
 
 const isValidNumber = (p, number) => new RegExp(p.pattern).test(number);
 

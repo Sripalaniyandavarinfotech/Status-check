@@ -1,0 +1,15 @@
+{
+  "name": "Calls - Sir Palaniyandavar Info Tech",
+  "short_name": "Calls",
+  "description": "Accepted and rejected customers to call, with one-tap calling.",
+  "start_url": "/calls",
+  "scope": "/calls",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3edde",
+  "theme_color": "#1f2a1f",
+  "icons": [
+    { "src": "/calls-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/calls-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

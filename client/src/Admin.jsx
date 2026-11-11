@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Dialog from './Dialog.jsx';
 import { Field, PasswordField, SearchBox } from './Fields.jsx';
 import Header from './Header.jsx';
+import { SkeletonTable, SkeletonTitle } from './Skeleton.jsx';
 import { plural, t } from './i18n.js';
 import { api, showError } from './lib.js';
 
@@ -141,7 +142,7 @@ export default function Admin({ user, onLogout }) {
       <Header user={user} onLogout={onLogout} />
       <main className="wrap">
         <section className="lead">
-          <h1>{list ? headline(all) : t('Loading users…')}</h1>
+          <h1>{list ? headline(all) : <SkeletonTitle />}</h1>
           <button className="btn primary" onClick={() => setDialog({ kind: 'add' })}>{t('Add user')}</button>
         </section>
 
@@ -159,6 +160,7 @@ export default function Admin({ user, onLogout }) {
           ))}
         </nav>
 
+        {!list && <SkeletonTable rows={4} cols={5} />}
         {list && (shown.length ? (
           <div className="table-box">
             <table className="users">

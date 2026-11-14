@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">SP Calls</string>
-    <string name="title_activity_main">SP Calls</string>
+    <string name="app_name">eThunaivan Calls</string>
+    <string name="title_activity_main">eThunaivan Calls</string>
     <string name="package_name">in.sirpalaniyandavar.calls</string>
     <string name="custom_url_scheme">in.sirpalaniyandavar.calls</string>
 </resources>

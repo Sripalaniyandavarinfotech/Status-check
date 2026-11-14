@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Dialog from './Dialog.jsx';
+import { FollowUpTag, RemindDialog } from './FollowUps.jsx';
+import { MoneyDialog, MoneyTag } from './Money.jsx';
 import { SearchBox } from './Fields.jsx';
 import Header from './Header.jsx';
 import { SkeletonRows } from './Skeleton.jsx';
 import TtdForm from './TtdForm.jsx';
 import { plural, t } from './i18n.js';
 import { api, phone, showError, when } from './lib.js';
-import { KINDS, KIND_ORDER, dateText, groupName, ticketLink } from './ttdShared.js';
+import { KINDS, KIND_ORDER, dateText, groupName, openSideWindow, ticketLink } from './ttdShared.js';
 
 // /ttd: the TTD bookings. Prepare them before the quota opens, book them in booking
 // mode, then save the ticket and send it to the customer on WhatsApp.
@@ -22,7 +24,7 @@ async function uploadTicket(b, file) {
   return data;
 }
 
-function Row({ b, onEdit, onChange, onDelete }) {
+function Row({ b, onEdit, onChange, onDelete, onMoney, onRemind }) {
   const file = useRef(null);
   const [busy, setBusy] = useState(false);
   const run = async work => {
@@ -46,6 +48,7 @@ function Row({ b, onEdit, onChange, onDelete }) {
           <span className={`tag ${b.status === 'booked' ? 'ok' : b.status === 'failed' ? 'bad' : ''}`}>{t(STATUS[b.status])}</span>
           {b.refNo && <span className="quiet">{t('Ref.')} {b.refNo}</span>}
           {b.sentAt && <span className="quiet">{t('Sent {when}', { when: when(b.sentAt) })}</span>}
+          <span className="row-flags"><MoneyTag payment={b.payment} fee={b.fee} paid={b.paid} /><FollowUpTag followUp={b.followUp} /></span>
         </div>
       </div>
       <div className="ttd-row-tools">
@@ -61,6 +64,8 @@ function Row({ b, onEdit, onChange, onDelete }) {
           </>
         )}
         {b.status === 'failed' && <button className="btn" disabled={busy} onClick={() => run(() => api(`ttd/${b.id}/status`, { method: 'POST', body: { status: 'ready' } }))}>{t('Try again')}</button>}
+        <button className="btn" onClick={() => onMoney(b)}>{t('Payment')}</button>
+        <button className="btn" onClick={() => onRemind(b)}>{b.followUp ? t('Change reminder') : t('Remind me')}</button>
         <button className="btn" onClick={() => onEdit(b)}>{t('Edit')}</button>
         <button className="link-btn" onClick={() => onDelete(b)}>{t('Delete')}</button>
       </div>
@@ -77,6 +82,8 @@ export default function Ttd({ user, onLogout }) {
   const [operators, setOperators] = useState([]);
   const [editing, setEditing] = useState(null); // a booking, or {} for a new one
   const [removing, setRemoving] = useState(null);
+  const [paying, setPaying] = useState(null);
+  const [reminding, setReminding] = useState(null);
 
   useEffect(() => { api('operators').then(setOperators).catch(() => {}); }, []);
   useEffect(() => {
@@ -99,7 +106,8 @@ export default function Ttd({ user, onLogout }) {
   }
 
   const counts = data?.counts;
-  const openSide = () => window.open('/ttd/book?side=1', 'ttd-book', 'popup,width=470,height=900');
+  const openSide = () => openSideWindow();
+  const premium = user?.plan?.features?.ttd !== false;
 
   return (
     <>
@@ -107,12 +115,20 @@ export default function Ttd({ user, onLogout }) {
       <main className="wrap ttd-page">
         <section className="lead">
           <h1>{counts ? (counts.ready ? t('{n} TTD bookings ready to book', { n: counts.ready }) : t('TTD bookings')) : t('TTD bookings')}</h1>
-          <div className="ttd-lead-tools">
-            <a className="btn" href="/ttd/book">{t('Open booking mode')}</a>
-            <button className="btn" onClick={openSide}>{t('Booking mode in a side window')}</button>
-            <button className="btn primary" onClick={() => setEditing({})}>{t('Add TTD booking')}</button>
-          </div>
+          {premium && (
+            <div className="ttd-lead-tools">
+              <a className="btn" href="/ttd/book">{t('Open booking mode')}</a>
+              <button className="btn" onClick={openSide}>{t('Booking mode in a side window')}</button>
+              <button className="btn primary" onClick={() => setEditing({})}>{t('Add TTD booking')}</button>
+            </div>
+          )}
         </section>
+        {!premium && (
+          <p className="plan-lock">
+            <span>🔒 {t('The TTD booking helper is part of the Premium plan. Saved bookings can still be seen.')}</span>
+            <a className="btn primary" href="/plan">{t('Upgrade to Premium')}</a>
+          </p>
+        )}
 
         <SearchBox label={t('Search TTD bookings')} placeholder={t('Search name, phone, email or reference number')} value={query} onChange={e => setQuery(e.target.value)} />
 
@@ -138,7 +154,7 @@ export default function Ttd({ user, onLogout }) {
 
         {!data ? <SkeletonRows /> : data.items.length ? (
           <ul className="ttd-list">
-            {data.items.map(b => <Row key={b.id} b={b} onEdit={setEditing} onChange={replace} onDelete={setRemoving} />)}
+            {data.items.map(b => <Row key={b.id} b={b} onEdit={setEditing} onChange={replace} onDelete={setRemoving} onMoney={setPaying} onRemind={setReminding} />)}
           </ul>
         ) : (
           <div className="empty">
@@ -153,6 +169,23 @@ export default function Ttd({ user, onLogout }) {
           operators={operators}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load(); }}
+        />
+      )}
+      {paying && (
+        <MoneyDialog
+          title={t('Payment: {name}', { name: groupName(paying) })}
+          target={{ ttdId: paying.id }}
+          onClose={() => setPaying(null)}
+          onChange={m => replace({ ...paying, payment: m.payment, fee: m.fee, paid: m.paid })}
+        />
+      )}
+      {reminding && (
+        <RemindDialog
+          name={groupName(reminding)}
+          target={{ ttdId: reminding.id }}
+          current={reminding.followUp}
+          onClose={() => setReminding(null)}
+          onSaved={f => { replace({ ...reminding, followUp: f && { id: f.id, dueOn: f.dueOn, note: f.note } }); setReminding(null); }}
         />
       )}
       {removing && (

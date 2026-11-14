@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
+import { FollowUpTag } from './FollowUps.jsx';
+import { MoneyBox, MoneyTag } from './Money.jsx';
 import { plural, t } from './i18n.js';
 import { api, copyText, kind, phone, showError, when, whatsappLink, withAgency } from './lib.js';
 
 const isReject = s => /reject/i.test(s);
+
+// Long runs of dots or dashes from government pages ("Recommended ........") are dropped.
+const tidy = text => String(text || '').replace(/([.\-_=*~·…])\1{3,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
 // Copies a value, which can be fetched at that moment, and shows that it worked.
 function CopyButton({ value, label, className = 'btn' }) {
@@ -111,7 +116,7 @@ function Notes({ c, onAdd, onRemove }) {
   );
 }
 
-export default function CustomerRow({ c, provider, open, thud, busy, chat, onPerson, onToggle, onStage, onOpenSite, onCheck, onNotify, onChat, onInformed, onEdit, onDelete, onAddNote, onRemoveNote, onRemoveAadhaar }) {
+export default function CustomerRow({ c, provider, open, thud, busy, chat, operators = [], onMoney, onRemind, onPerson, onToggle, onStage, onOpenSite, onCheck, onNotify, onChat, onInformed, onEdit, onDelete, onAddNote, onRemoveNote, onRemoveAadhaar }) {
   const k = kind(c);
   const manual = provider?.manual;
   const finished = k === 'ok' || k === 'bad';
@@ -143,6 +148,13 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onPer
             {c.notifications?.[0] && !c.notifications[0].ok && <span className="bad-text small">{t('Last message failed')}</span>}
             {c.notes?.length > 0 && <span className="quiet small">{plural(c.notes.length, 'note')}</span>}
             {c.samePhone > 1 && <span className="quiet small">{t('{n} applications on this number', { n: c.samePhone })}</span>}
+            {(c.payment || c.followUp || c.caseName) && (
+              <span className="row-flags">
+                {c.caseName && <span className="case-tag">{t('Aadhaar name: {name}', { name: c.caseName })}</span>}
+                <MoneyTag payment={c.payment} fee={c.fee} paid={c.paid} />
+                <FollowUpTag followUp={c.followUp} />
+              </span>
+            )}
           </span>
           <span className="chev" aria-hidden="true" />
         </button>
@@ -151,6 +163,16 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onPer
           <label className="informed-check">
             <input type="checkbox" checked={!!c.informed} onChange={e => onInformed(c, e.target.checked)} />
             {t('Informed')}
+          </label>
+          <label className="informed-check paid-check">
+            <input type="checkbox" checked={c.payment === 'paid'} onChange={async e => {
+              try {
+                onMoney(c, await api('money/status', { method: 'POST', body: { customerId: c.id, payment: e.target.checked ? 'paid' : 'unpaid' } }));
+              } catch (err) {
+                showError(err);
+              }
+            }} />
+            {t('Paid')}
           </label>
           <CopyButton value={c.applicationNo} label={t('Copy application number of {name}', { name: c.name })} />
           {manual ? (
@@ -179,7 +201,7 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onPer
                   {c.appliedOn && <p>{t('Application date')}: {c.appliedOn}</p>}
                   {c.service && <p>{c.service}</p>}
                   {c.aadhaarLast4 && <AadhaarLine c={c} onRemove={onRemoveAadhaar} />}
-                  {c.remarks && <p>{c.remarks}</p>}
+                  {tidy(c.remarks) && <p>{tidy(c.remarks)}</p>}
                   {c.previousStatus && <p className="quiet">{t('Before this')}: {t(c.previousStatus)}</p>}
                   <p className="quiet">{manual ? t('Updated') : t('Checked')}: {when(c.lastChecked)}</p>
                 </section>
@@ -187,9 +209,17 @@ export default function CustomerRow({ c, provider, open, thud, busy, chat, onPer
                   <h3>{t('WhatsApp')}</h3>
                   <History c={c} />
                 </section>
+                {open && <MoneyBox target={{ customerId: c.id }} payment={c.payment} fee={c.fee} paid={c.paid} payments={c.payments || []} operators={operators} onChange={m => onMoney(c, m)} />}
                 <section className="row-tools">
                   {c.samePhone > 1 && <button className="btn person-btn" onClick={() => onPerson(c.whatsapp)}>{t('All {n} applications', { n: c.samePhone })}</button>}
                   <button className="btn" onClick={() => onEdit(c)}>{t('Edit customer')}</button>
+                  <button className="btn" onClick={() => onRemind(c)}>{c.followUp ? t('Change reminder') : t('Remind me')}</button>
+                  {!c.caseId && (
+                    <button className="btn" onClick={() => {
+                      try { sessionStorage.setItem('case-from', JSON.stringify({ id: c.id, name: c.name, whatsapp: c.whatsapp, hasAadhaar: c.hasAadhaar, operatorId: c.operatorId ? String(c.operatorId) : '' })); } catch { /* starts empty */ }
+                      window.location.href = '/aadhaar/name';
+                    }}>{t('Start Aadhaar name change')}</button>
+                  )}
                   {chat
                     ? <button className="btn" disabled={!c.found} onClick={() => onChat(c)}>{t('Send on WhatsApp')}</button>
                     : <button className="btn" disabled={!c.found} onClick={() => onNotify(c)}>{t('Send update now')}</button>}

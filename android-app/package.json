@@ -1,5 +1,5 @@
 {
-  "name": "sp-calls-android",
+  "name": "ethunaivan-calls-android",
   "private": true,
   "description": "The Android app for /calls. It opens the shop's CRM link; see README.md.",
   "scripts": {

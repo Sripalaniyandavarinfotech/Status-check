@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Dialog from './Dialog.jsx';
 import { Field, PasswordField } from './Fields.jsx';
 import Header from './Header.jsx';
+import { PriceList } from './Money.jsx';
 import { SkeletonTiles } from './Skeleton.jsx';
 import { plural, t } from './i18n.js';
 import { api, monthName, phone, showError, shortMonth } from './lib.js';
@@ -314,6 +315,8 @@ export default function ProfilePage({ user, onLogout }) {
             {services.length > 0 && <ServicesTable services={services} nameOf={nameOf} />}
           </>
         )}
+
+        {!admin && <PriceList />}
 
         {!admin && <Operators />}
 

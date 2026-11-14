@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SP Calls</title>
+<title>eThunaivan Calls</title>
 <style>
 /* The app's own start page: the loading screen, and the shop link when it's needed.
    It looks like the website's loading screen, so going from one to the other is seamless. */
@@ -32,6 +32,8 @@ button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font
 .go { background: #1f2a1f; color: #fff; }
 .go:disabled { opacity: .6; }
 .paste { background: #f0e5cc; color: #6b5026; }
+.find { background: #f0e5cc; color: #6b5026; }
+.find:disabled { opacity: .6; }
 .error { display: none; padding: 10px 12px; border-radius: 10px; background: #f6e1dc; color: #a8352c; font-size: 14px; }
 .error.on { display: block; }
 .lang { position: fixed; top: max(14px, env(safe-area-inset-top)); right: 16px; min-height: 36px; padding: 0 14px; border: 1px solid rgba(217, 199, 163, .45); border-radius: 999px; background: transparent; color: #fff; font-weight: 400; font-size: 14px; }
@@ -48,7 +50,7 @@ button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font
 </div>
 <div>
   <p class="title" id="title">Calls</p>
-  <p class="sub">Sir Palaniyandavar Info Tech</p>
+  <p class="sub">eThunaivan</p>
 </div>
 <div class="bar" aria-hidden="true"><i></i></div>
 <p class="line" id="line" role="status"></p>
@@ -59,10 +61,11 @@ button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font
   <p class="error" id="error" role="alert"></p>
   <label for="link" id="link-label"></label>
   <div class="row">
-    <input id="link" type="url" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://….trycloudflare.com or 192.168…:3000">
+    <input id="link" type="url" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ethunaivan.local">
     <button class="paste" id="paste" type="button"></button>
   </div>
   <button class="go" id="go"></button>
+  <button class="find" id="find" type="button"></button>
 </form>
 
 <script>
@@ -76,17 +79,21 @@ button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font
   var TEXT = {
     en: {
       title: 'Calls', checking: 'Connecting to the shop computer…', opening: 'Loading your call list…',
-      askTitle: 'Connect to your shop', askHelp: 'Paste the shop link from sudo crm-link. On the shop Wi-Fi you can also use the laptop\'s address, like 192.168.0.104:3000.',
+      askTitle: 'Connect to your shop', askHelp: 'Be on the shop Wi-Fi and press Find the shop laptop. Or type ethunaivan.local, the laptop\'s address (like 192.168.1.20), or a link from sudo crm-link.',
+      find: 'Find the shop laptop', finding: 'Looking for the shop laptop on this Wi-Fi…', searching: 'Searching the Wi-Fi… {n}%',
+      notFound: 'The shop laptop was not found on this Wi-Fi. Check that this phone is on the shop Wi-Fi and the laptop is on, then try again, or type its address.',
       changeTitle: 'Change the shop link', label: 'Shop link', paste: 'Paste', go: 'Connect', going: 'Connecting…',
-      bad: 'Enter the shop link, or the laptop\'s Wi-Fi address like 192.168.0.104:3000',
+      bad: 'Enter ethunaivan.local, the laptop\'s Wi-Fi address like 192.168.1.20, or the shop link',
       self: 'localhost means this phone, not the laptop. Use the laptop\'s Wi-Fi address instead, like 192.168.0.104:3000. node server.js shows it when it starts.',
-      down: "Can't reach the shop computer at this link. Check that the laptop is on. The link changes when the laptop restarts, so you may need the new one.",
+      down: "Can't reach the shop laptop at this address. Check that this phone is on the shop Wi-Fi and the laptop is on, or press Find the shop laptop.",
       notCrm: 'This link works, but it is not the shop CRM. Check the link and try again.',
       lang: 'தமிழ்',
     },
     ta: {
       title: 'அழைப்புகள்', checking: 'கடை கணினியுடன் இணைக்கிறது…', opening: 'அழைப்புப் பட்டியல் ஏற்றப்படுகிறது…',
-      askTitle: 'உங்கள் கடையுடன் இணைக்கவும்', askHelp: 'sudo crm-link காட்டும் கடை இணைப்பை ஒட்டவும். கடை Wi-Fi இல் லேப்டாப்பின் முகவரியையும் பயன்படுத்தலாம், எ.கா. 192.168.0.104:3000.',
+      askTitle: 'உங்கள் கடையுடன் இணைக்கவும்', askHelp: 'கடை Wi-Fi இல் இருந்து "கடை லேப்டாப்பைக் கண்டுபிடி" அழுத்தவும். அல்லது ethunaivan.local, லேப்டாப் முகவரி (எ.கா. 192.168.1.20) அல்லது sudo crm-link இணைப்பை உள்ளிடவும்.',
+      find: 'கடை லேப்டாப்பைக் கண்டுபிடி', finding: 'இந்த Wi-Fi இல் கடை லேப்டாப்பைத் தேடுகிறது…', searching: 'Wi-Fi இல் தேடுகிறது… {n}%',
+      notFound: 'இந்த Wi-Fi இல் கடை லேப்டாப் கிடைக்கவில்லை. தொலைபேசி கடை Wi-Fi இல் உள்ளதா, லேப்டாப் இயங்குகிறதா என்று பார்த்து மீண்டும் முயலவும், அல்லது முகவரியை உள்ளிடவும்.',
       changeTitle: 'கடை இணைப்பை மாற்று', label: 'கடை இணைப்பு', paste: 'ஒட்டு', go: 'இணை', going: 'இணைக்கிறது…',
       bad: 'கடை இணைப்பை அல்லது லேப்டாப்பின் Wi-Fi முகவரியை உள்ளிடவும், எ.கா. 192.168.0.104:3000',
       self: 'localhost என்பது இந்தத் தொலைபேசி, லேப்டாப் அல்ல. லேப்டாப்பின் Wi-Fi முகவரியைப் பயன்படுத்தவும், எ.கா. 192.168.0.104:3000. node server.js தொடங்கும்போது அதைக் காட்டும்.',
@@ -103,6 +110,7 @@ button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font
   $('link-label').textContent = T.label;
   $('paste').textContent = T.paste;
   $('go').textContent = T.go;
+  $('find').textContent = T.find;
   $('lang').textContent = T.lang;
   $('lang').onclick = function () { store.set('lang', ta ? 'en' : 'ta'); location.reload(); };
 
@@ -112,20 +120,22 @@ button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font
     var found = text.match(/https?:\/\/[^\s"'<>]+/i);
     if (found) text = found[0];
     // A laptop on the shop Wi-Fi has a plain address like 192.168.0.104:3000, with no https.
-    else if (text && !/^https?:\/\//i.test(text)) text = (LOCAL.test(text) ? 'http://' : 'https://') + text;
+    else if (text && !/^https?:\/\//i.test(text)) text = (LOCAL.test(text) || LAN.test(text) ? 'http://' : 'https://') + text;
     try {
       var u = new URL(text);
       return /^https?:$/.test(u.protocol) && u.hostname.indexOf('.') > 0 ? u.origin : null;
     } catch (e) { return null; }
   }
   var LOCAL = /^(\d{1,3}\.){3}\d{1,3}(:\d+)?(\/|$)/;
+  // Names on the shop network, like ethunaivan.local, are plain http too.
+  var LAN = /^[a-z0-9-]+\.local(:\d+)?(\/|$)/i;
   // "localhost" on a phone is the phone itself, never the laptop.
   var SELF = /^(https?:\/\/)?(localhost|127\.\d+\.\d+\.\d+)(:\d+)?(\/|$)/i;
 
   // The CRM answers /ping.json with its name, so a wrong or dead link is caught here.
-  function check(link) {
+  function check(link, wait) {
     var stop = new AbortController();
-    var timer = setTimeout(function () { stop.abort(); }, 10000);
+    var timer = setTimeout(function () { stop.abort(); }, wait || 10000);
     return fetch(link + '/ping.json', { cache: 'no-store', signal: stop.signal })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) { clearTimeout(timer); return d && d.app === 'sp-crm' ? 'ok' : 'not-crm'; })
@@ -167,13 +177,57 @@ button { min-height: 48px; padding: 0 16px; border: 0; border-radius: 10px; font
     });
   };
 
+  // Finds the laptop on the shop Wi-Fi: first by its name, then by trying each
+  // address on the usual home and shop router ranges. Only /ping.json is asked.
+  var NAME = 'http://ethunaivan.local';
+  var RANGES = ['192.168.1', '192.168.0', '192.168.29', '192.168.31', '192.168.100', '192.168.2', '10.0.0'];
+  function find(progress) {
+    return check(NAME, 3000).then(function (result) {
+      if (result === 'ok') return NAME;
+      var saved = store.get(KEY) || '';
+      var m = saved.match(/^http:\/\/(\d+\.\d+\.\d+)\.\d+/);
+      var ranges = m ? [m[1]].concat(RANGES.filter(function (r) { return r !== m[1]; })) : RANGES;
+      var all = [];
+      ranges.forEach(function (r) { for (var i = 1; i < 255; i++) all.push('http://' + r + '.' + i); });
+      var at = 0;
+      var BATCH = 48;
+      function next() {
+        if (at >= all.length) return Promise.resolve(null);
+        var batch = all.slice(at, at + BATCH);
+        at += BATCH;
+        progress(Math.min(100, Math.round((at / all.length) * 100)));
+        return Promise.all(batch.map(function (u) { return check(u, 1200).then(function (r) { return r === 'ok' ? u : null; }); }))
+          .then(function (found) {
+            var hit = found.filter(Boolean)[0];
+            return hit || next();
+          });
+      }
+      return next();
+    });
+  }
+
+  function findAndOpen() {
+    document.body.classList.remove('asking');
+    $('line').textContent = T.finding;
+    return find(function (n) { $('line').textContent = T.searching.replace('{n}', n); }).then(function (link) {
+      if (!link) return ask(T.notFound);
+      store.set(KEY, link);
+      open(link);
+    });
+  }
+  $('find').onclick = findAndOpen;
+
   var saved = store.get(KEY);
-  if (/[?&]change=1/.test(location.search) || !saved) {
+  if (/[?&]change=1/.test(location.search)) {
     ask('', !!saved);
+  } else if (!saved) {
+    findAndOpen();
   } else {
     $('line').textContent = T.checking;
-    check(saved).then(function (result) {
+    check(saved, 6000).then(function (result) {
       if (result === 'ok') open(saved);
+      // The laptop may have a new Wi-Fi address: look for it before asking.
+      else if (result === 'down' && /^http:\/\//.test(saved)) findAndOpen();
       else ask(result === 'down' ? T.down : T.notCrm);
     });
   }

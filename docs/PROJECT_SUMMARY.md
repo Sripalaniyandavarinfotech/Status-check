@@ -1,6 +1,8 @@
-# Sir Palaniyandavar Info Tech CRM: project summary
+# eThunaivan (by Palaniyandavar Info Tech): project summary
 
-Last updated: 11 November 2026
+Last updated: 12 November 2026
+
+**Name:** the product is **eThunaivan** (இ-துணைவன், "helper"), made by the company **Palaniyandavar Info Tech**. The phone app is **eThunaivan Calls**.
 
 This file covers:
 - What the CRM does today, and how each part works.
@@ -8,7 +10,7 @@ This file covers:
 - What has been decided.
 - What is planned but **not built yet**: e-PAN emails for many shops, the server move, subscriptions, feature switches and new services.
 
-> **Commits:** the last commit is `2602f58` ("Add PAN, operators, informed list and laptop hosting"). Everything since then works on the laptop but is **not committed or pushed to GitHub yet**.
+> **Commits:** `2f4a7d9` ("Add dashboard, TTD booking helper, phone app, notices and more") is on GitHub. The eThunaivan rename, HTTPS (see `docs/HTTPS.md`) and the pinned TTD window came after it.
 
 ---
 
@@ -16,7 +18,7 @@ This file covers:
 1. [What the CRM is](#1-what-the-crm-is)
 2. [How it's built and run](#2-how-its-built-and-run)
 3. [Features built so far](#3-features-built-so-far)
-4. [Phone app (/calls) and Android app (SP Calls)](#4-phone-app-calls-and-android-app-sp-calls)
+4. [Phone app (/calls) and Android app (eThunaivan Calls)](#4-phone-app-calls-and-android-app-ethunaivan-calls)
 5. [e-PAN emails: how they work today](#5-e-pan-emails-how-they-work-today)
 6. [e-PAN emails for many shops (planned)](#6-e-pan-emails-for-many-shops-planned)
 7. [Hosting today](#7-hosting-today)
@@ -105,7 +107,7 @@ node server.js    # starts the server; restart it after server or database chang
 - **Login page:** redesigned, with a sample application beside the form.
 - **Loading:**
   - Skeleton loading shapes on every page.
-  - A dark-green loading screen appears instantly while the site loads: "SP" for the website, the phone icon for the phone app.
+  - A dark-green loading screen appears instantly while the site loads: "eT" for the website, the phone icon for the phone app.
 - **Animations:** short and light.
   - Save buttons show a spinner, then a tick, or shake on an error.
   - Customer rows slide open and shut smoothly.
@@ -186,7 +188,53 @@ node server.js    # starts the server; restart it after server or database chang
 
 ---
 
-## 4. Phone app (/calls) and Android app (SP Calls)
+### Payment: Paid or Not paid (built 12 Nov 2026)
+
+- Each customer and TTD booking is marked **Paid** or **Not paid**. That is all a shop has to do.
+- **New customer:** a **Paid / Not paid** choice (Paid is selected to start). Amounts are optional, in a closed **"Amount details (optional)"** box: fee, amount paid now, Cash or UPI.
+- **In the list:** a **Paid** tick beside **Informed**, and a tag: **Paid** or **Not paid** (with the amount left, only when a fee was entered).
+- **Open a customer:** Paid / Not paid buttons, and the optional amounts (fee, part payments with date, mode and operator). Paying the whole fee marks it Paid by itself.
+- **TTD bookings:** the **Payment** button opens the same box.
+- **`/dues` ("Not paid" in the side bar):** everyone marked Not paid, oldest first, with **Mark paid**, a polite Tamil **Remind on WhatsApp** message (with the amount only when known) and **Amounts**.
+- **Home:** a **Payments** card: marked paid today, not paid, and amounts entered today if any.
+- **Price list** in Profile is optional: it only fills the fee in the amount box.
+- Existing customers have no payment status until someone marks one.
+- Code: `lib/money.js` (`/api/money/...`, including `/api/money/status`), columns `customers.payment`, `payment_at` (same on `ttd_bookings`), tables `prices`, `payments`; `client/src/Money.jsx`.
+
+### Follow-up reminders (built 12 Nov 2026)
+
+- **Remind me** on any customer or TTD booking: Tomorrow, In 3 days, In 7 days, Friday, or a date, with an optional note. One open reminder each; a new one replaces the old.
+- **Home:** "Follow-ups today" (overdue ones in red). **`/followups`:** today and overdue, then coming up. Each has **Done**, **Move to tomorrow** and **Open** (opens the service page searched to that application, `?q=`).
+- Code: `lib/followups.js` (`/api/followups`), table `followups`; `client/src/FollowUps.jsx`.
+
+### Income and OBC renewal reminders (built 12 Nov 2026)
+
+- Only TNeDistrict customers whose service is **Income** or **OBC** certificate, approved.
+- **11 months after approval** they appear in **`/renewals`**. One click opens a Tamil WhatsApp message ("your certificate expires next month, please visit our shop to renew") and marks them **sent**; **Skip** also removes them. Each customer only once.
+- Approvals from more than a year before the feature started (`app_state` `renewals.start`) are left out, so old customers don't flood the list.
+- Automatic sending (Premium) waits for the WhatsApp API.
+- Code: `lib/renewals.js` (`/api/renewals`), columns `customers.renewal`, `renewal_at`; `client/src/Renewals.jsx`.
+
+### Monthly report (built 12 Nov 2026)
+
+- **`/report`** (profile menu → Monthly report): any of the last 12 months. Applications added, approved and rejected by service; TTD added and booked; how many were marked paid, how many are not paid today, and amounts entered (only if any); still pending today; each operator's applications and collection, with the **best operator**; renewal reminders sent; follow-ups done.
+- **Email on the 1st** of each month at 08:00 (India time, `REPORT_TIME` in `.env`) to every active shop with an email address, through FormSubmit, once per shop and month (table `monthly_sent`). The first email to a new address is FormSubmit's confirmation.
+- **Email me this report** button (5 per hour) and **Share on WhatsApp** (to the shop's own number).
+- The report holds counts and totals only, never customer names or numbers.
+- Code: `lib/monthly.js`, `/api/report`, `/api/report/email`; `client/src/MonthlyReport.jsx`.
+
+### Aadhaar name change (built 14 Nov 2026)
+
+- **Side bar:** Aadhaar became a box with **Updates** (the Aadhaar list) and **Name change** (`/aadhaar/name`).
+- **A case per customer:** name on Aadhaar now, mobile, Aadhaar number (sealed, last 4 shown), new name in English and in Tamil (with Copy buttons), date of request, **OBC certificate needed** (on by default; off for SC/ST), operator, fee Paid / Not paid, note. Start a new one, or **Start Aadhaar name change** on any customer row (copies their name, mobile, operator and sealed Aadhaar).
+- **Stages, worked out from the linked applications each time:** Add certificate numbers → Waiting for certificates (Community + Income) → **Apply OBC** → Waiting for OBC → **Ready for Aadhaar centre** → At Aadhaar centre → Done. A rejected certificate (or Aadhaar update) puts it in **Needs attention**, with a box to enter the new application number.
+- **Certificates** are ordinary TNeDistrict customers in the new English name, linked to the case (`customers.case_id`, `case_role`), so the automatic checks move the case on. An application already in the list is linked instead of added. They show an **"Aadhaar name: …"** tag.
+- **Enrolment:** type the **SID** from the slip; its last 14 digits fill the date and time (S1483822988390 **20261105152827** → 5 Nov 2026, 15:28:27). The SID becomes an entry in the Aadhaar list; approving it there (or **Name updated** on the case) makes the case Done.
+- **WhatsApp (Tamil, one click):** "certificates ready, come to the Aadhaar centre", and "your name is changed".
+- **Also:** Payment (Not paid list), Remind me, Home card (Apply OBC, Ready, At Aadhaar centre, Needs attention), monthly report line (started, enrolled, finished).
+- Code: `lib/cases.js` (`/api/cases`), table `name_cases`; `payments.case_id`, `followups.case_id`; `client/src/AadhaarName.jsx`.
+
+## 4. Phone app (/calls) and Android app (eThunaivan Calls)
 
 ### The phone page `/calls`
 **What it shows:**
@@ -210,11 +258,11 @@ node server.js    # starts the server; restart it after server or database chang
 - **Hidden:** no Aadhaar and no notes.
 - **Logging out** clears the saved lists from the phone.
 
-### The Android app "SP Calls" (APK)
+### The Android app "eThunaivan Calls" (APK)
 **What it is:**
 - **Folder:** `android-app/`, built with Capacitor 8.
-- **App ID:** `in.sirpalaniyandavar.calls`. Version 1.1 (versionCode 2).
-- **Download:** the website serves it at `/sp-calls.apk`. The file comes from `client/public/sp-calls.apk`, which git ignores.
+- **App ID:** `in.sirpalaniyandavar.calls`. Version 1.2 (versionCode 3).
+- **Download:** the website serves it at `/ethunaivan-calls.apk`. The file comes from `client/public/ethunaivan-calls.apk`, which git ignores.
 
 **How it starts:**
 - **First open:** the app's start page (`android-app/www/index.html`) asks for the **shop link**.
@@ -293,16 +341,16 @@ Only PAN emails are forwarded. The shop's other mail stays private.
 
 ---
 
-## 7. Hosting today
+## 7. Hosting today (trial: an old laptop on the shop network)
 
-- **Laptop setup:**
-  - Guide: `deploy/LAPTOP_SETUP.md`.
-  - Script: `deploy/laptop/setup.sh`. It installs PostgreSQL 18, Node 24 and cloudflared, and adds system services for the site, the tunnel and nightly backups.
-  - Packaging: `deploy/make-package.sh` makes the package that is copied to the laptop.
-- **Public link:** a Cloudflare **quick tunnel**. `sudo crm-link` shows the current link.
-  - **The link changes whenever the tunnel or laptop restarts.**
-- **Shop Wi-Fi:** `http://192.168.0.104:3000`. The router may change this address, so reserving it for the laptop in the router settings stops it changing.
-- **Backups:** nightly database backup, kept 14 days (`backup.sh`, `crm-backup.timer`).
+- **Address:** **https://ethunaivan.local** from any computer or phone on the same Wi-Fi (no port). The laptop is renamed `ethunaivan` and announces itself with Avahi (mDNS). The laptop's IP address also works; `crm-address` on the laptop shows both.
+- **HTTPS:** the laptop makes its own certificate authority once and a site certificate for `ethunaivan.local` and its current IP on every start (`ExecStartPre` in `crm.service`). Each device trusts it once from `http://ethunaivan.local/ethunaivan-ca.crt`.
+- **Ports:** 80 and 443 (`PORT`, `HTTPS_PORT`, `LAN_NAME` in `.env`); the service gets `CAP_NET_BIND_SERVICE`. Plain http stays for the phone app on the Wi-Fi.
+- **Phone app 1.3:** finds the laptop by itself: tries `ethunaivan.local`, then scans the usual router ranges (192.168.1/0/29/31/100/2, 10.0.0) for `/ping.json`. It searches again if the saved address stops answering. Download: `http://ethunaivan.local/ethunaivan-calls.apk`.
+- **Setup:** `deploy/LAPTOP_SETUP.md`, `deploy/laptop/setup.sh` (installs PostgreSQL 18, Node 24, Avahi; services for the site and nightly backups). `--with-tunnel` adds a Cloudflare quick tunnel for shops outside the network (`sudo crm-link`; the link changes on restart).
+- **Packaging:** `deploy/make-package.sh` (site, database copy, Aadhaar key, UPI details and QR); `--code-only` for updates.
+- **Backups:** nightly at 2 AM, kept 14 days (`backup.sh`, `crm-backup.timer`).
+- **Later:** Lightsail and a domain, after the trial.
 
 ---
 
@@ -319,6 +367,9 @@ Only PAN emails are forwarded. The shop's other mail stays private.
 | `HOST` | `127.0.0.1` hides the site from the network, so only the tunnel reaches it |
 | `BEHIND_TUNNEL` | `on` behind Cloudflare, so login limits see the real visitor |
 | `CHECK_TIMES`, `CHECK_GAP_SECONDS` | Automatic TNeDistrict checks |
+| `REPORT_TIME` | When the monthly report is emailed on the 1st (default `08:00`, India time) |
+| `UPI_ID`, `UPI_NAME` | Where shops pay their subscription. The QR image goes in `data/upi-qr.png` |
+| `GSTIN` | Only once GST-registered: receipts become tax invoices |
 | `WA_TOKEN`, `WA_PHONE_NUMBER_ID`, `WA_TEMPLATE`, `WA_TEMPLATE_LANG`, `WA_NOTIFY` | WhatsApp Business API (optional) |
 | `EPAN_EMAIL`, `EPAN_APP_PASSWORD`, `EPAN_USER`, `EPAN_CHECK_MINUTES` | e-PAN mailbox reading |
 
@@ -350,8 +401,14 @@ Only PAN emails are forwarded. The shop's other mail stays private.
 | 6 Nov 2026 | Full Aadhaar numbers allowed, encrypted only |
 | Earlier | PAN receipts: UTIITSL only for now. NSDL waits for a sample PDF |
 | 11 Nov 2026 | **Website only.** Installed Windows software and an admin hub were dropped. Shops can't work offline anyway, because every government portal is online |
-| 11 Nov 2026 | The phone page and SP Calls APK stay |
+| 11 Nov 2026 | The phone page and eThunaivan Calls APK stay |
 | 11 Nov 2026 | Payments, when built, are **subscriptions: shops pay you** |
+| 12 Nov 2026 | Product named **eThunaivan**, by Palaniyandavar Info Tech |
+| 12 Nov 2026 | HTTPS on the laptop with a local certificate (port 3443) |
+| 14 Nov 2026 | Aadhaar name change cases built (certificates → OBC → Aadhaar centre SID) |
+| 14 Nov 2026 | Trial hosted on an old laptop on the shop network at https://ethunaivan.local; phone app finds it by itself |
+| 12 Nov 2026 | Subscriptions built: trial, grace, read-only, UPI pay with admin confirm, receipts |
+| 12 Nov 2026 | Payment status (Paid / Not paid, amounts optional), follow-ups, income/OBC renewal reminders and the monthly report built; all in Standard |
 
 ---
 
@@ -392,7 +449,7 @@ Only PAN emails are forwarded. The shop's other mail stays private.
    - A monthly restore test.
 7. **Watching:** UptimeRobot (free) on `/ping.json`. Logs with `journalctl -u crm`.
 8. **Update links:**
-   - Add the domain to the SP Calls app and rebuild the APK.
+   - Add the domain to the eThunaivan Calls app and rebuild the APK.
    - Tell the shops the new link.
 9. **Test before switching:**
    - Log in, add, edit, and mark informed.
@@ -449,7 +506,26 @@ Approximate, at $1 ≈ ₹88, with 18% GST on AWS. Check current prices before p
 
 ---
 
-## 13. Plan: subscriptions with Razorpay
+## 13. Subscriptions (built 12 Nov 2026)
+
+**Plans:** Standard ₹399 a month / ₹3,990 a year; Premium ₹599 / ₹5,990. Premium alone has the TTD booking helper, e-PAN email reading, the phone app (`/calls` and the APK), automatic WhatsApp through the API, and custom features. Everything else is in both. Prices are in `lib/plans.js` (`PRICES`).
+
+**Life cycle:** 14-day Premium trial → Active (paid until a date) → 5 grace days (all still works, red banner) → Read-only (see, search, CSV; no changes; automatic checks stop). Data is never deleted. Suspension stays separate and manual. When this went live every unpaid shop got a fresh 14-day trial, once (`app_state` `plans.live`).
+
+**Shops:** `/plan` (profile menu → My plan) shows the plan, days left, both plans with prices (monthly or yearly), the payment history with receipts. **Pay** shows the amount and period, your UPI QR (`data/upi-qr.png`) and UPI ID with **Copy** and **Open UPI app** (a `upi://` link with the amount), then the shop types the **UTR** and presses **I have paid**. One waiting payment at a time; it can be cancelled.
+- A new period starts after what is already paid for or the trial, so nothing is lost by paying early. A different plan chosen while one is running starts on the new period's first day.
+- **Upgrade** Standard → Premium mid-period pays only the difference for the days left.
+- A banner shows in the last 7 days, in grace and when read-only. Inbox reminders arrive 7, 3 and 1 days before, when grace starts, and when it turns read-only (each once).
+
+**Admin:** `/admin/billing`: payments to confirm (**Confirm received** / **Not received** with a reason), due in 7 days, overdue, recent payments with receipts, money by month, shop counts. On the users page, **Plan** per shop: record a payment received another way (cash, bank, UPI), change the plan now, or add trial days.
+
+**Receipts:** numbered `PIT-2026-0001`, printable / save as PDF, from `/api/plan/receipt/<id>` (the shop's own only) and the admin's billing page. With `GSTIN` set they say "Tax invoice".
+
+**Enforced on the server:** read-only blocks every change (402) except paying and the inbox; Premium parts return 402 for other plans (TTD bookings stay readable); e-PAN emails and automatic WhatsApp are skipped for non-Premium shops; scheduled checks skip read-only shops.
+
+**Not done yet:** Razorpay UPI Autopay (phase 2); automatic WhatsApp message limits; your UPI ID and QR image. Code: `lib/plans.js`, `/api/plan/...`, `/api/admin/billing`, `/api/admin/payments/...`; tables `plan_payments`, `plan_events`; `client/src/PlanPage.jsx`, `AdminBilling.jsx`.
+
+## 13b. Later: Razorpay (phase 2)
 
 **Not built yet.** Shops pay you to use the CRM.
 
@@ -538,7 +614,7 @@ Approximate, at $1 ≈ ₹88, with 18% GST on AWS. Check current prices before p
 | Aadhaar number storage (encrypted) | ✅ | ✅ |
 | TTD booking helper | – | ✅ |
 | e-PAN email reading | – | ✅ |
-| Phone app (`/calls` and SP Calls APK) | – | ✅ |
+| Phone app (`/calls` and eThunaivan Calls APK) | – | ✅ |
 | Automatic WhatsApp messages (Business API) | – | ✅ |
 | Features made on request | – | ✅ |
 
@@ -633,7 +709,7 @@ These follow the TTD form.
 - [ ] Answer the **subscription decisions** in section 13.
 - [ ] Choose which **new services** to add first.
 - [ ] Have a native Tamil reader check the Tamil wording, especially the short labels in the phone app: "ஏற்பு", "நிராகரிப்பு", "அழைத்தவை", "அழைத்தேன்".
-- [ ] Try SP Calls on a **real Android phone**.
+- [ ] Try eThunaivan Calls on a **real Android phone**.
 
 **To build (agreed or suggested):**
 - [ ] Automatic WhatsApp API messages in **Tamil**, to match one-click.

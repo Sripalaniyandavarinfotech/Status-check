@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import Dialog from './Dialog.jsx';
 import { t } from './i18n.js';
-import { showError, today } from './lib.js';
+import { api, showError, today } from './lib.js';
+import { PaymentPick } from './Money.jsx';
 import { parsePanReceipt, pdfLines } from './panReceipt.js';
 
-const EMPTY = { operatorId: '', name: '', applicationNo: '', whatsapp: '', aadhaar: '', panKind: '', birthDate: '', appliedOn: '' };
+const EMPTY = { operatorId: '', name: '', applicationNo: '', whatsapp: '', aadhaar: '', panKind: '', birthDate: '', appliedOn: '', payment: 'paid', fee: '', paidNow: '', payMode: 'cash' };
 const DATE = /^\d{2}\/\d{2}\/\d{4}$/;
 
 function validate(form, provider, needOperator) {
@@ -21,6 +22,8 @@ function validate(form, provider, needOperator) {
   else if (!/^[6-9]\d{9}$/.test(d)) errors.whatsapp = t('Enter a valid 10-digit mobile number');
   if (form.birthDate.trim() && !DATE.test(form.birthDate.trim())) errors.birthDate = t('Enter the date of birth as DD/MM/YYYY');
   if (form.appliedOn.trim() && !DATE.test(form.appliedOn.trim())) errors.appliedOn = t('Enter the application date as DD/MM/YYYY');
+  if (form.fee && !(/^\d{1,6}$/.test(form.fee) && Number(form.fee) <= 100000)) errors.fee = t('Enter the fee in whole rupees');
+  if (form.paidNow && !(/^\d{1,6}$/.test(form.paidNow) && Number(form.paidNow) <= 100000)) errors.paidNow = t('Enter the amount paid in whole rupees');
   const aadhaar = form.aadhaar.replace(/[\s-]/g, '');
   if (aadhaar && !/^[2-9]\d{11}$/.test(aadhaar)) errors.aadhaar = t('Enter a valid 12-digit Aadhaar number');
   return errors;
@@ -44,6 +47,18 @@ export default function AddCustomer({ provider, agency = '', operators, customer
   const [dragging, setDragging] = useState(false); // a file is being dragged over the page
   const nameRef = useRef(null);
   const type = provider.id;
+  const [price, setPrice] = useState(null); // the shop's price for this service
+  const [amounts, setAmounts] = useState(false); // the optional amount box is open
+
+  // A new customer's fee starts at the shop's price for the service.
+  useEffect(() => {
+    if (customer) return;
+    api('money/prices').then(p => {
+      const v = p[type] == null ? '' : String(p[type]);
+      setPrice(v);
+      setForm(f => (f.fee ? f : { ...f, fee: v }));
+    }).catch(() => {});
+  }, [customer, type]);
   const needOperator = !customer && operators.length > 0;
   const operatorChoices = customer ? [{ id: '', name: t('No operator') }, ...operators] : operators;
   const askAadhaar = type === 'aadhaar' || !!customer?.aadhaarLast4;
@@ -65,11 +80,13 @@ export default function AddCustomer({ provider, agency = '', operators, customer
     if (Object.keys(found).length) return flash('error');
     setSaving(true);
     try {
-      await onSave({ type, ...form, panAgency: agency || undefined });
+      const { payment, fee, paidNow, payMode, ...rest } = form;
+      const money = amounts ? { fee, paidNow, payMode } : {};
+      await onSave(customer ? { type, ...rest } : { type, ...rest, payment, ...money, panAgency: agency || undefined });
       if (customer) return;
       flash('done');
       setSaved(form.name.trim());
-      setForm({ ...EMPTY, operatorId: form.operatorId, appliedOn: today() }); // the same operator usually adds the next one
+      setForm({ ...EMPTY, operatorId: form.operatorId, appliedOn: today(), payment: form.payment, fee: price || '', payMode: form.payMode }); // the same operator usually adds the next one
       nameRef.current.focus();
     } catch (err) {
       flash('error');
@@ -182,6 +199,30 @@ export default function AddCustomer({ provider, agency = '', operators, customer
         )}
         {field('whatsapp', t('WhatsApp number'), { type: 'tel', inputMode: 'numeric', placeholder: t('10-digit mobile number') })}
         {field('appliedOn', t('Application date'), { inputMode: 'numeric', placeholder: 'DD/MM/YYYY' })}
+        {!customer && (
+          <fieldset className="field pay-field">
+            <legend className="pay-legend">{t('Payment')}</legend>
+            <PaymentPick value={form.payment} onChange={v => setForm({ ...form, payment: v })} />
+          </fieldset>
+        )}
+        {!customer && (
+          <details className="money-more add-amounts" open={amounts} onToggle={e => setAmounts(e.currentTarget.open)}>
+          <summary>{t('Amount details (optional)')}</summary>
+          <div className="fee-row">
+            {field('fee', t('Fee (₹)'), { inputMode: 'numeric', placeholder: t('No fee') })}
+            {field('paidNow', t('Paid now (₹)'), { inputMode: 'numeric', placeholder: '0' })}
+            <fieldset className="field">
+              <legend>{t('Paid by')}</legend>
+              <div className="seg-pick">
+                {[['cash', 'Cash'], ['upi', 'UPI']].map(([v, label]) => (
+                  <button type="button" key={v} aria-pressed={form.payMode === v} className={form.payMode === v ? 'on' : ''} onClick={() => setForm({ ...form, payMode: v })}>{t(label)}</button>
+                ))}
+              </div>
+            </fieldset>
+            {form.fee && <button type="button" className="link-btn fee-full" onClick={() => setForm({ ...form, paidNow: form.fee, payment: 'paid' })}>{t('Paid in full')}</button>}
+          </div>
+          </details>
+        )}
         {askAadhaar && field('aadhaar', t('Aadhaar number (optional)'), { inputMode: 'numeric', placeholder: customer?.aadhaarLast4 ? t('XXXX XXXX {digits} saved. Type to replace it.', { digits: customer.aadhaarLast4 }) : t('12-digit number') })}
         <button className={`btn primary wide save-btn ${saving ? 'busy' : result}`} disabled={saving} aria-live="polite">
           {saving ? <><i className="save-spin" aria-hidden="true" />{t('Saving…')}</>

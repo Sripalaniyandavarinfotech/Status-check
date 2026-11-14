@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1f2a1f">
-<title>Sir Palaniyandavar Info Tech</title>
+<title>eThunaivan</title>
 <meta name="description" content="Certificates, ration card, voter ID and Aadhaar applications, followed for you, with updates on WhatsApp.">
 <style>
 body { margin: 0; background: #1f2a1f; } /* the site's own styles replace this once they load */
@@ -28,6 +28,12 @@ html.is-calls .splash .splash-ring { display: block; }
 @keyframes splash-ring { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.55); opacity: 0; } }
 @keyframes splash-bar { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
 @media (prefers-reduced-motion: reduce) { .splash-ring { animation: none; } .splash-bar i { animation-duration: 3s; } }
+/* After the first open in this browser session, moving between pages shows the
+   site's own light background, not the loading screen. It only fades in if a
+   page is slow (on a weak connection), so it is clear something is happening. */
+html.quick body { background: #f3edde; }
+html.quick .splash { opacity: 0; animation: splash-late .25s ease .8s forwards; }
+@keyframes splash-late { to { opacity: 1; } }
 </style>
 <script>
   // Pick the phone app's look and the language before anything is drawn.
@@ -36,8 +42,12 @@ html.is-calls .splash .splash-ring { display: block; }
     var ta = false;
     try { ta = localStorage.getItem('lang') === 'ta'; } catch (e) {}
     if (calls) document.documentElement.classList.add('is-calls');
+    // The full loading screen is for the first open only (the phone app always has it).
+    var seen = false;
+    try { seen = sessionStorage.getItem('opened') === '1'; sessionStorage.setItem('opened', '1'); } catch (e) {}
+    if (seen && !calls) document.documentElement.classList.add('quick');
     window.__splashText = {
-      title: calls ? (ta ? 'அழைப்புகள்' : 'Calls') : 'Sir Palaniyandavar Info Tech',
+      title: calls ? (ta ? 'அழைப்புகள்' : 'Calls') : 'eThunaivan',
       line: calls ? (ta ? 'அழைப்புப் பட்டியல் ஏற்றப்படுகிறது…' : 'Loading your call list…') : (ta ? 'ஏற்றுகிறது…' : 'Loading…'),
     };
   })();
@@ -49,11 +59,11 @@ html.is-calls .splash .splash-ring { display: block; }
     <div class="splash-mark">
       <span class="splash-ring"></span><span class="splash-ring r2"></span>
       <img class="for-calls" src="/calls-icon-192.png" alt="" width="88" height="88">
-      <span class="splash-mono for-site" aria-hidden="true">SP</span>
+      <span class="splash-mono for-site" aria-hidden="true">eT</span>
     </div>
     <div>
-      <p class="splash-title" id="splash-title">Sir Palaniyandavar Info Tech</p>
-      <p class="splash-sub for-calls">Sir Palaniyandavar Info Tech</p>
+      <p class="splash-title" id="splash-title">eThunaivan</p>
+      <p class="splash-sub for-calls">eThunaivan</p>
     </div>
     <div class="splash-bar" aria-hidden="true"><i></i></div>
     <p class="splash-line" id="splash-line">Loading…</p>

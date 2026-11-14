@@ -10,7 +10,9 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/crm-laptop"
 
 tar -cf - --exclude=./node_modules --exclude=./dist --exclude=./data --exclude=./data-backup-before-postgres \
-  --exclude=./backups --exclude=./.env --exclude=./.git --exclude=./.claude --exclude=./crm-laptop.tar.gz . \
+  --exclude=./backups --exclude=./.env --exclude=./.git --exclude=./.claude --exclude=./crm-laptop.tar.gz \
+  --exclude=./android-app/node_modules --exclude=./android-app/android/.gradle --exclude=./android-app/android/build \
+  --exclude=./android-app/android/app/build . \
   | tar -xf - -C "$work/crm-laptop"
 
 if [ "${1:-}" != "--code-only" ]; then
@@ -21,6 +23,11 @@ if [ "${1:-}" != "--code-only" ]; then
   # Saved Aadhaar numbers can only be read with the same key.
   (umask 077; grep '^AADHAAR_KEY=' .env | cut -d= -f2- > "$work/crm-laptop/deploy-data/aadhaar.key" || true)
 fi
+
+# Where shops pay their subscription: the UPI details and QR image, if set.
+mkdir -p "$work/crm-laptop/deploy-data"
+(umask 077; grep -E '^(UPI_ID|UPI_NAME|GSTIN)=' .env > "$work/crm-laptop/deploy-data/upi.env" 2>/dev/null || true)
+[ -f data/upi-qr.png ] && cp data/upi-qr.png "$work/crm-laptop/deploy-data/upi-qr.png" || true
 
 umask 077
 rm -f crm-laptop.tar.gz

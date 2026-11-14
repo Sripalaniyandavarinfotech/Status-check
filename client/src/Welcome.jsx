@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FollowUpItem } from './FollowUps.jsx';
 import Header from './Header.jsx';
 import { ACTIONS } from './Pages.jsx';
 import { SkeletonTable, SkeletonTiles } from './Skeleton.jsx';
 import { plural, t } from './i18n.js';
-import { api, monthName, shortMonth, showError, when } from './lib.js';
+import { api, monthName, rs, shortMonth, showError, when } from './lib.js';
 
 const STEP_MS = 1100;
 const HOLD_STEPS = 5; // how long the finished list rests before the bot starts again
@@ -62,7 +63,7 @@ function Tile({ label, value, note, href, tone }) {
 function StageBar({ row }) {
   const parts = [['approved', 'Approved'], ['progress', 'In progress'], ['rejected', 'Rejected'], ['new', 'Not checked yet']]
     .filter(([k]) => row[k] > 0);
-  if (!row.total) return <span className="dash-bar empty" aria-hidden="true" />;
+  if (!row.total) return <span className="dash-bar blank" aria-hidden="true" />;
   return (
     <span className="dash-bar" aria-hidden="true">
       {parts.map(([k, label]) => (
@@ -258,6 +259,41 @@ export default function Welcome({ user, onLogout }) {
               <Tile label={t('Added this month')} value={thisMonth.added} note={t('{n} approved this month', { n: thisMonth.approved })} />
             </section>
 
+            {data.money && data.followUps && <div className="dash-today">
+              <section className="dash-card">
+                <div className="dash-card-head">
+                  <h2>{t('Follow-ups today')}</h2>
+                  <a href="/followups">{t('See all')}</a>
+                </div>
+                {data.followUps.length ? (
+                  <ul className="task-list compact">
+                    {data.followUps.slice(0, 5).map(f => (
+                      <FollowUpItem key={f.id} f={f} onDone={id => setData(d => ({ ...d, followUps: d.followUps.filter(x => x.id !== id) }))} />
+                    ))}
+                  </ul>
+                ) : <p className="quiet dash-empty">{t('Nothing to follow up today.')}</p>}
+                {data.followUps.length > 5 && <p className="quiet dash-more">{t('{n} more in Follow-ups', { n: data.followUps.length - 5 })}</p>}
+              </section>
+
+              <section className="dash-card dash-money">
+                <div className="dash-card-head">
+                  <h2>{t('Payments')}</h2>
+                  <a href="/report">{t('Monthly report')}</a>
+                </div>
+                <ul className="dash-pay">
+                  <li><b>{data.money.paidToday}</b><span>{t('Marked paid today')}</span></li>
+                  <li className={data.money.unpaid ? 'owe' : ''}><b>{data.money.unpaid}</b><span>{t('Not paid')}</span></li>
+                </ul>
+                {data.money.total > 0 && (
+                  <p className="quiet dash-taken">{t('Amounts entered today: {total} (cash {cash}, UPI {upi})', { total: rs(data.money.total), cash: rs(data.money.cash), upi: rs(data.money.upi) })}</p>
+                )}
+                <a className={`dash-owed ${data.money.unpaid ? 'on' : ''}`} href="/dues">
+                  {data.money.unpaid ? t('See who has not paid') : t('Everyone has paid.')}
+                </a>
+                {data.renewalsDue > 0 && <a className="dash-owed on" href="/renewals">{t('Renewals due: {n}', { n: data.renewalsDue })}</a>}
+              </section>
+            </div>}
+
             <section className="dash-card">
               <div className="dash-card-head">
                 <h2>{t('Services')}</h2>
@@ -285,8 +321,8 @@ export default function Welcome({ user, onLogout }) {
                           <td className="dn strong">{r.total}</td>
                           <td className="dn">{r.new || '–'}</td>
                           <td className="dn">{r.progress || '–'}</td>
-                          <td className="dn ok">{r.approved || '–'}</td>
-                          <td className="dn bad">{r.rejected || '–'}</td>
+                          <td className={`dn ${r.approved ? 'ok' : ''}`}>{r.approved || '–'}</td>
+                          <td className={`dn ${r.rejected ? 'bad' : ''}`}>{r.rejected || '–'}</td>
                           <td className="dn">{r.toTell ? <span className="dash-pill">{r.toTell}</span> : '–'}</td>
                           <td className="bar-col"><StageBar row={r} /></td>
                         </tr>
@@ -307,6 +343,20 @@ export default function Welcome({ user, onLogout }) {
               <MonthsChart months={data.months} />
 
               <div className="dash-side">
+                {data.nameChanges?.all > 0 && (
+                  <section className="dash-card">
+                    <div className="dash-card-head">
+                      <h2>{t('Aadhaar name change')}</h2>
+                      <a href="/aadhaar/name">{t('Open')}</a>
+                    </div>
+                    <ul className="dash-ttd">
+                      <li className={data.nameChanges.obc ? 'act' : ''}><b>{data.nameChanges.obc}</b><span>{t('Apply OBC')}</span></li>
+                      <li className={data.nameChanges.ready ? 'act' : ''}><b>{data.nameChanges.ready}</b><span>{t('Ready')}</span></li>
+                      <li><b>{data.nameChanges.centre}</b><span>{t('At Aadhaar centre')}</span></li>
+                      {data.nameChanges.attention > 0 && <li className="bad"><b>{data.nameChanges.attention}</b><span>{t('Needs attention')}</span></li>}
+                    </ul>
+                  </section>
+                )}
                 {data.ttd && (
                   <section className="dash-card">
                     <div className="dash-card-head">

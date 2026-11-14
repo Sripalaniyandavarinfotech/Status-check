@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { PlanTag, ShopPlanDialog } from './AdminBilling.jsx';
 import Dialog from './Dialog.jsx';
 import { Field, PasswordField, SearchBox } from './Fields.jsx';
 import Header from './Header.jsx';
@@ -170,6 +171,7 @@ export default function Admin({ user, onLogout }) {
                   <th scope="col">{t('Phone number')}</th>
                   <th scope="col" className="count">{t('WhatsApp numbers')}</th>
                   <th scope="col">{t('Status')}</th>
+                  <th scope="col">{t('Plan')}</th>
                   <th scope="col"><span className="hide">{t('Actions')}</span></th>
                 </tr>
               </thead>
@@ -180,8 +182,10 @@ export default function Admin({ user, onLogout }) {
                     <td>{u.phone || t('Not given')}</td>
                     <td className="count">{u.whatsappNumbers}</td>
                     <td><span className={`tag ${STATUS[u.status].tone}`}>{t(STATUS[u.status].label)}</span></td>
+                    <td>{u.status === 'active' ? <PlanTag p={u.planState} /> : <span className="quiet">–</span>}</td>
                     <td>
                       <div className="act">
+                        {u.status === 'active' && <button className="btn" disabled={busy === u.id} onClick={() => setDialog({ kind: 'plan', target: u })}>{t('Plan')}</button>}
                         {u.status === 'pending' && <button className="btn good" disabled={busy === u.id} onClick={() => act(u, 'accept', t('{user} accepted', { user: u.userId }))}>{t('Accept')}</button>}
                         {u.status === 'pending' && <button className="btn stop" disabled={busy === u.id} onClick={() => setDialog({ kind: 'refuse', target: u })}>{t('Refuse')}</button>}
                         {u.status !== 'pending' && <button className="btn" disabled={busy === u.id} onClick={() => setDialog({ kind: 'password', target: u })}>{t('Change password')}</button>}
@@ -200,6 +204,8 @@ export default function Admin({ user, onLogout }) {
       </main>
 
       {dialog?.kind === 'add' && <AddUser onSave={addUser} onClose={() => setDialog(null)} />}
+
+      {dialog?.kind === 'plan' && <ShopPlanDialog shop={target} onClose={() => setDialog(null)} onDone={done => { setDialog(null); setNote(done); load(); }} />}
 
       {dialog?.kind === 'password' && <ChangePassword target={target} onSave={p => changePassword(target, p)} onClose={() => setDialog(null)} />}
 

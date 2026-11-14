@@ -68,7 +68,7 @@ export default function Landing({ user }) {
       </main>
       <footer className="land-foot">
         <div className="wrap">
-          <span>{t('Sir Palaniyandavar Info Tech')}</span>
+          <span>{t('eThunaivan')} · {t('by Palaniyandavar Info Tech')}</span>
           <a href={user ? '/' : '/login'}>{t(user ? 'Open the CRM' : 'Staff log in')}</a>
         </div>
       </footer>

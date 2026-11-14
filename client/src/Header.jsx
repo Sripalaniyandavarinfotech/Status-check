@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import Inbox, { NoticeStrip } from './Inbox.jsx';
+import NavIcon from './NavIcons.jsx';
+import { PlanBanner } from './PlanPage.jsx';
 import { lang, setLang, t } from './i18n.js';
 import { api } from './lib.js';
 
 const LINKS = {
-  user: [['/home', 'Home'], ['/', 'TNeDistrict'], ['/tnpds', 'TNPDS'], ['/voter', 'Voter'], ['/aadhaar', 'Aadhaar'], ['/pan/uti', 'UTI', 'PAN'], ['/pan/nsdl', 'NSDL', 'PAN'], ['/ttd', 'TTD']],
-  admin: [['/admin', 'Users'], ['/admin/reports', 'Reports'], ['/admin/notices', 'Notices']],
+  user: [['/home', 'Home'], ['/', 'TNeDistrict'], ['/tnpds', 'TNPDS'], ['/voter', 'Voter'], ['/aadhaar', 'Updates', 'Aadhaar'], ['/aadhaar/name', 'Name change', 'Aadhaar'], ['/pan/uti', 'UTI', 'PAN'], ['/pan/nsdl', 'NSDL', 'PAN'], ['/ttd', 'TTD'], ['/followups', 'Follow-ups', 'Others'], ['/dues', 'Not paid', 'Others'], ['/renewals', 'Renewals', 'Others']],
+  admin: [['/admin', 'Users'], ['/admin/billing', 'Billing'], ['/admin/reports', 'Reports'], ['/admin/notices', 'Notices']],
 };
 
 // Links that share a group, like PAN's UTI and NSDL, are shown together.
@@ -30,7 +33,7 @@ function ProfileMenu({ user, onLogout }) {
   const links = [
     [admin ? '/admin/profile' : '/profile', 'Profile'],
     [admin ? '/admin/activity' : '/activity', 'Activity'],
-    ...(admin ? [] : [['/operators', 'Operator stats']]),
+    ...(admin ? [] : [['/plan', 'My plan'], ['/report', 'Monthly report'], ['/operators', 'Operator stats']]),
     ['/home', 'Home page'],
   ];
 
@@ -105,6 +108,19 @@ export default function Header({ user, onLogout, children, current, counts: give
   }, [withNav]);
   const counts = loaded || given ? { ...loaded, ...given } : undefined;
 
+  // The side bar is a narrow strip of icons; the eThunaivan name opens and closes
+  // the full one. The choice is remembered on this computer.
+  const hasNav = !!user && !noNav;
+  const [short, setShort] = useState(() => { try { return localStorage.getItem('nav-full') !== '1'; } catch { return true; } });
+  useEffect(() => {
+    document.body.classList.toggle('nav-short', hasNav && short);
+    return () => document.body.classList.remove('nav-short');
+  }, [hasNav, short]);
+  const toggleNav = () => setShort(v => {
+    try { localStorage.setItem('nav-full', v ? '1' : '0'); } catch { /* not remembered */ }
+    return !v;
+  });
+
   // On phones the links scroll sideways, so keep the open one in view.
   useEffect(() => {
     document.querySelector('.site-nav a.on')?.scrollIntoView({ block: 'nearest', inline: 'center' });
@@ -114,7 +130,12 @@ export default function Header({ user, onLogout, children, current, counts: give
     <>
     <header className="top">
       <div className="wrap top-in">
-        <a className="brand" href={user?.role === 'user' ? '/home' : '/'}><span className="badge" aria-hidden="true">SP</span>{t('Sir Palaniyandavar Info Tech')}</a>
+        {hasNav ? (
+          <button type="button" className="brand brand-btn" aria-expanded={!short} aria-label={t(short ? 'Open the side bar' : 'Close the side bar')} title={t(short ? 'Open the side bar' : 'Close the side bar')} onClick={toggleNav}>
+            <span className="badge" aria-hidden="true">eT</span><span className="brand-name">{t('eThunaivan')}</span>
+            <span className="brand-arrow" aria-hidden="true" />
+          </button>
+        ) : <a className="brand" href={user?.role === 'user' ? '/home' : '/'}><span className="badge" aria-hidden="true">eT</span>{t('eThunaivan')}</a>}
         <div className="top-right">
           {children}
           {user?.role === 'user' && <Inbox />}
@@ -136,14 +157,19 @@ export default function Header({ user, onLogout, children, current, counts: give
                     href={href}
                     className={[on ? 'on' : '', className].join(' ').trim()}
                     aria-current={on ? 'page' : undefined}
+                    title={t(label)}
                     onClick={e => {
                       if (!onNav || !given?.[href] || e.metaKey || e.ctrlKey || e.shiftKey) return; // only the page's own places switch in place
                       e.preventDefault();
-                      onNav(href);
+                      // Switching service in place cross-fades, like moving between pages.
+                      if (document.startViewTransition && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                        document.startViewTransition(() => flushSync(() => onNav(href)));
+                      } else onNav(href);
                     }}
                   >
-                    <span>{t(label)}</span>
-                    {count && <b>{count.n}</b>}
+                    <NavIcon name={href} />
+                    <span className="nav-text">{t(label)}</span>
+                    {count && <b data-zero={count.n === 0 || undefined}>{count.n}</b>}
                     {!className && count?.due > 0 && <small>{t('{n} waiting to send', { n: count.due })}</small>}
                   </a>
                 );
@@ -154,9 +180,10 @@ export default function Header({ user, onLogout, children, current, counts: give
               const due = block.links.reduce((n, [href]) => n + (counts?.[href]?.due || 0), 0);
               const open = block.links.some(([href]) => href === here);
               return (
-                <div key={block.group} className={`nav-box ${open ? 'on' : ''}`} role="group" aria-label={t(block.group)}>
-                  <span className="nav-box-head">
-                    {t(block.group)}
+                <div key={block.group} className={`nav-box ${block.group === 'Others' ? 'stack' : ''} ${open ? 'on' : ''}`} role="group" aria-label={t(block.group)}>
+                  <span className="nav-box-head" title={t(block.group)}>
+                    <NavIcon name={block.group} />
+                    <span className="nav-text">{t(block.group)}</span>
                     {block.links.some(([href]) => counts?.[href]) && <b>{total}</b>}
                   </span>
                   <div className="nav-seg">{block.links.map(l => link(l, 'seg'))}</div>
@@ -168,6 +195,7 @@ export default function Header({ user, onLogout, children, current, counts: give
         </nav>
       )}
     </header>
+    {user?.role === 'user' && <PlanBanner plan={user.plan} />}
     {user?.role === 'user' && <NoticeStrip />}
     </>
   );

@@ -11,7 +11,7 @@ export default function Splash({ line = 'Loading your call list…' }) {
       </div>
       <div>
         <p className="splash-title">{t('Calls')}</p>
-        <p className="splash-sub for-calls">Sir Palaniyandavar Info Tech</p>
+        <p className="splash-sub for-calls">eThunaivan</p>
       </div>
       <div className="splash-bar" aria-hidden="true"><i /></div>
       <p className="splash-line">{t(line)}</p>

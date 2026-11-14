@@ -1,7 +1,7 @@
 {
-  "name": "sir-palaniyandavar-crm",
+  "name": "ethunaivan-crm",
   "version": "1.0.0",
-  "description": "Customer application tracking for Sir Palaniyandavar Info Tech",
+  "description": "eThunaivan: customer application tracking for e-service shops, by Palaniyandavar Info Tech",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

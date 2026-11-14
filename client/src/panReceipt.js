@@ -14,7 +14,12 @@ const after = (lines, label, pattern) => {
 export function parsePanReceipt(lines) {
   const text = lines.join('\n');
   if (!/PAN Application Acknowledgment Receipt/i.test(text)) return null;
-  const applicationNo = (text.match(/\bU-([A-Z][0-9]{6,12})\b/) || [])[1]; // without the U-
+  // Without the U-. Some receipts print "U-" and the number on separate lines, with
+  // "Application No./Coupon No." between them, so those layouts are tried too.
+  const NUMBER = /^U?-?\s*([A-Z][0-9]{6,12})$/;
+  const applicationNo = (text.match(/\bU-\s*([A-Z][0-9]{6,12})\b/) || [])[1]
+    || after(lines, /Application No\.?\s*\/?\s*Coupon No\.?\s*:?/i, /\b([A-Z][0-9]{6,12})\b/)
+    || (lines.map(l => l.match(NUMBER)).find(Boolean) || [])[1];
   if (!applicationNo) return null;
   const date = /\b\d{2}\/\d{2}\/\d{4}\b/;
   const nameLine = lines.find(l => /Name as per Aadhaar/i.test(l)) || '';

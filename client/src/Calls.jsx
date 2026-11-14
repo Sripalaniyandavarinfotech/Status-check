@@ -62,7 +62,7 @@ function useInstall() {
     add('meta', { name: 'theme-color', content: '#1f2a1f' });
     document.documentElement.classList.add('is-calls'); // the loading screen's phone-app look
     const title = document.title;
-    document.title = `${t('Calls')} - Sir Palaniyandavar Info Tech`;
+    document.title = `${t('Calls')} - eThunaivan`;
     const offer = e => { e.preventDefault(); setPrompt(e); };
     const installed = () => setPrompt(null);
     window.addEventListener('beforeinstallprompt', offer);
@@ -95,7 +95,7 @@ function TopBar({ user, install, onLogout }) {
       </div>
       <div className="calls-top-tools">
         {IN_APK && <button className="calls-chip-btn" onClick={changeLink}>{t('Change link')}</button>}
-        {OFFER_APK && <a className="calls-chip-btn" href="/sp-calls.apk" download>{t('Android app')}</a>}
+        {OFFER_APK && <a className="calls-chip-btn" href="/ethunaivan-calls.apk" download>{t('Android app')}</a>}
         {install && !IN_APK && <button className="calls-chip-btn" onClick={install}>{t('Install app')}</button>}
         <button className="calls-chip-btn" lang={lang === 'ta' ? 'en' : 'ta'} onClick={() => setLang(lang === 'ta' ? 'en' : 'ta')}>{lang === 'ta' ? 'English' : 'தமிழ்'}</button>
         {onLogout && <button className="calls-chip-btn" onClick={onLogout}>{t('Log out')}</button>}
@@ -134,7 +134,7 @@ function CallsLogin({ onLogin }) {
         <Field id="userId" label={t('User ID')} value={form.userId} onChange={change('userId')} autoComplete="username" autoCapitalize="none" />
         <PasswordField id="password" label={t('Password')} value={form.password} onChange={change('password')} autoComplete="current-password" />
         <button className="btn primary wide" disabled={busy}>{busy ? t('Logging in…') : t('Log in')}</button>
-        {!IN_APK && <p className="quiet calls-apk"><a href="/sp-calls.apk" download>{t('Download the Android app (APK)')}</a></p>}
+        {!IN_APK && <p className="quiet calls-apk"><a href="/ethunaivan-calls.apk" download>{t('Download the Android app (APK)')}</a></p>}
       </form>
     </main>
   );

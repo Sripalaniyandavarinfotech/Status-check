@@ -11,6 +11,13 @@ import { t } from './i18n.js';
 import { ActivityPage, OperatorStatsPage, ReportsPage } from './Pages.jsx';
 import ProfilePage from './Profile.jsx';
 import Status from './Status.jsx';
+import { FollowUpsPage } from './FollowUps.jsx';
+import { DuesPage } from './Money.jsx';
+import MonthlyReport from './MonthlyReport.jsx';
+import PlanPage from './PlanPage.jsx';
+import AdminBilling from './AdminBilling.jsx';
+import AadhaarName from './AadhaarName.jsx';
+import RenewalsPage from './Renewals.jsx';
 import Ttd from './Ttd.jsx';
 import TtdBook from './TtdBook.jsx';
 import { SkeletonPage } from './Skeleton.jsx';
@@ -65,6 +72,7 @@ function Page({ user, setUser, logout }) {
     if (path === '/admin/reports') return <ReportsPage user={user} onLogout={logout} />;
     if (path === '/admin/profile') return <ProfilePage user={user} onLogout={logout} />;
     if (path === '/admin/notices') return <AdminNotices user={user} onLogout={logout} />;
+    if (path === '/admin/billing') return <AdminBilling user={user} onLogout={logout} />;
     return <Admin user={user} onLogout={logout} />;
   }
 
@@ -72,6 +80,12 @@ function Page({ user, setUser, logout }) {
     if (path === '/activity') return <ActivityPage user={user} onLogout={logout} />;
     if (path === '/operators') return <OperatorStatsPage user={user} onLogout={logout} />;
     if (path === '/ttd') return <Ttd user={user} onLogout={logout} />;
+    if (path === '/followups') return <FollowUpsPage user={user} onLogout={logout} />;
+    if (path === '/dues') return <DuesPage user={user} onLogout={logout} />;
+    if (path === '/renewals') return <RenewalsPage user={user} onLogout={logout} />;
+    if (path === '/report') return <MonthlyReport user={user} onLogout={logout} />;
+    if (path === '/plan') return <PlanPage user={user} onLogout={logout} />;
+    if (path === '/aadhaar/name') return <AadhaarName user={user} onLogout={logout} />;
     if (path === '/ttd/book') return <TtdBook user={user} onLogout={logout} />;
     if (path === '/reports' || path === '/profile') {
       if (path === '/reports') window.history.replaceState(null, '', '/profile'); // reports moved here

@@ -1,4 +1,4 @@
-# Sir Palaniyandavar Info Tech CRM
+# eThunaivan CRM (by Palaniyandavar Info Tech)
 
 Tracks customers' certificate, ration card, voter and Aadhaar applications, and sends
 WhatsApp updates.

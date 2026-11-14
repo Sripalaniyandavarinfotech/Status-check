@@ -6,6 +6,7 @@ const TITLES = {
   0: "Can't reach the server",
   400: 'Please check that',
   401: 'Please log in again',
+  402: 'Your plan',
   403: 'Not allowed',
   404: 'Not found',
   409: 'Could not do that',
@@ -110,3 +111,34 @@ export function downloadCsv(customers, providers, fileName) {
   a.download = fileName;
   a.click();
 }
+
+// Lets a list item slide away before it is removed. Returns at once when motion is off.
+export const leave = (ms = 220) => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? Promise.resolve() : new Promise(r => setTimeout(r, ms)));
+
+// Money in rupees, Indian style: ₹1,20,000.
+export const rs = n => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+
+// A day in India as YYYY-MM-DD, `add` days from today.
+export function dayIso(add = 0) {
+  const [y, m, d] = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + add)).toISOString().slice(0, 10);
+}
+
+// Days from today to a YYYY-MM-DD day (negative when it has passed).
+export const daysFrom = iso => Math.round((Date.parse(`${iso}T00:00:00Z`) - Date.parse(`${dayIso()}T00:00:00Z`)) / 86400000);
+
+// "Today", "Tomorrow", "Yesterday", or a short date like "Fri, 15 Nov".
+export function dayText(iso) {
+  const n = daysFrom(iso);
+  if (n === 0) return t('Today');
+  if (n === 1) return t('Tomorrow');
+  if (n === -1) return t('Yesterday');
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+
+// The service page that holds an application, with a search for it.
+const SERVICE_PAGES = { certificate: '/', smartcard: '/tnpds', voter: '/voter', aadhaar: '/aadhaar' };
+export const serviceHref = (type, agency, q) => {
+  const page = type === 'pan' ? (agency === 'NSDL' ? '/pan/nsdl' : '/pan/uti') : SERVICE_PAGES[type] || '/';
+  return q ? `${page}?q=${encodeURIComponent(q)}` : page;
+};

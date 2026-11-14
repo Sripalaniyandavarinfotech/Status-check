@@ -3,7 +3,7 @@ import Header from './Header.jsx';
 import { SkeletonRows } from './Skeleton.jsx';
 import { t } from './i18n.js';
 import { api, copyText, showError } from './lib.js';
-import { KINDS, KIND_ORDER, dateText, groupName, spaced } from './ttdShared.js';
+import { KINDS, KIND_ORDER, dateText, groupName, openSideWindow, spaced } from './ttdShared.js';
 
 // Booking mode: one ready booking at a time, every detail one click (or one key) to
 // copy, in the order of the TTD form. Staff paste into TTD themselves; nothing here
@@ -183,7 +183,7 @@ export default function TtdBook({ user, onLogout }) {
         <div className="ttd-book-top">
           <a href="/ttd" className="ttd-back" target={SIDE ? '_blank' : undefined} rel="noreferrer">← {t('TTD bookings')}</a>
           <h1>{t('Booking mode')}</h1>
-          {!SIDE && <button className="btn" onClick={() => window.open('/ttd/book?side=1', 'ttd-book', 'popup,width=470,height=900')}>{t('Open in a side window')}</button>}
+          {!SIDE && <button className="btn" onClick={openSideWindow}>{t('Open in a side window')}</button>}
         </div>
 
         <Countdown />

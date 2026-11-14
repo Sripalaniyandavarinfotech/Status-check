@@ -3,11 +3,12 @@ import AddCustomer from './AddCustomer.jsx';
 import CustomerRow from './CustomerRow.jsx';
 import Dialog from './Dialog.jsx';
 import { Pager, SearchBox } from './Fields.jsx';
+import { RemindDialog } from './FollowUps.jsx';
 import Header from './Header.jsx';
 import PersonApplications from './PersonApplications.jsx';
 import { SkeletonRows, SkeletonTitle } from './Skeleton.jsx';
 import { plural, t } from './i18n.js';
-import { api, downloadCsv, kind, showError, whatsappLink, whatsappText, when, withAgency } from './lib.js';
+import { api, dayText, downloadCsv, kind, showError, whatsappLink, whatsappText, when, withAgency } from './lib.js';
 
 const VIEWS = [
   { id: 'all', label: 'All' },
@@ -56,8 +57,9 @@ export default function App({ user, onLogout }) {
   const [agency, setAgency] = useState(() => placeAt(window.location.pathname).agency); // for PAN
   const [kindFilter, setKindFilter] = useState(''); // '' | 'New' | 'Correction'
   const [page, setPage] = useState(1);
-  const [query, setQuery] = useState('');
-  const [search, setSearch] = useState(''); // `query` once typing has paused
+  // Other pages (follow-ups, dues) link here with ?q= to find one application.
+  const [query, setQuery] = useState(() => (new URLSearchParams(window.location.search).get('q') || '').slice(0, 100));
+  const [search, setSearch] = useState(() => query); // `query` once typing has paused
   const [reload, setReload] = useState(0);
   const [openId, setOpenId] = useState(null);
   const [dialog, setDialog] = useState(null); // { kind: 'add' | 'edit' | 'send' | 'delete' | 'notify', customer? }
@@ -490,6 +492,9 @@ export default function App({ user, onLogout }) {
                   thud={thudId === c.id}
                   busy={checking === c.id}
                   chat={chat}
+                  operators={operators}
+                  onMoney={(x, m) => replace({ ...x, ...m })}
+                  onRemind={x => setDialog({ kind: 'remind', customer: x })}
                   onToggle={() => setOpenId(openId === c.id ? null : c.id)}
                   onStage={setStage}
                   onOpenSite={openSite}
@@ -566,6 +571,19 @@ export default function App({ user, onLogout }) {
         </Dialog>
       )}
 
+      {dialog?.kind === 'remind' && (
+        <RemindDialog
+          name={dialog.customer.name}
+          target={{ customerId: dialog.customer.id }}
+          current={dialog.customer.followUp}
+          onClose={closeDialog}
+          onSaved={f => {
+            setDialog(null);
+            replace({ ...dialog.customer, followUp: f && { id: f.id, dueOn: f.dueOn, note: f.note } });
+            toast(f ? t('Reminder set for {day}', { day: dayText(f.dueOn) }) : t('Reminder removed'));
+          }}
+        />
+      )}
       {dialog?.kind === 'person' && <PersonApplications whatsapp={dialog.whatsapp} providers={providers} onOpen={openApplication} onClose={closeDialog} />}
 
       {dialog?.kind === 'aadhaar' && (

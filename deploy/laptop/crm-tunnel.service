@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 User=crm
 Group=crm
-ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:3000
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:80
 Restart=always
 RestartSec=10
 NoNewPrivileges=true

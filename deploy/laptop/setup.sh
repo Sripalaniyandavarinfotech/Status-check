@@ -1,5 +1,7 @@
 #!/bin/bash
-# Run on the laptop, inside the unpacked crm-laptop folder:  sudo bash deploy/laptop/setup.sh
+# Run on the laptop, inside the unpacked crm-laptop folder:
+#   sudo bash deploy/laptop/setup.sh                 for the shop network (Wi-Fi) only
+#   sudo bash deploy/laptop/setup.sh --with-tunnel   also a Cloudflare link for shops elsewhere
 # Safe to run again: it keeps the laptop's .env and never replaces its database.
 set -euo pipefail
 
@@ -9,13 +11,23 @@ say() { printf '\n==> %s\n' "$1"; }
 [ "$(uname -m)" = x86_64 ] || { echo "This script needs a 64-bit Intel or AMD laptop."; exit 1; }
 command -v apt-get >/dev/null || { echo "This script needs Ubuntu or Debian."; exit 1; }
 
+TUNNEL=no
+for arg in "$@"; do
+  case "$arg" in
+    --with-tunnel) TUNNEL=yes ;;
+    *) echo "Unknown option: $arg"; exit 1 ;;
+  esac
+done
+
 export DEBIAN_FRONTEND=noninteractive
 APP=/opt/crm
 OWNER=${SUDO_USER:-}
+NAME=ethunaivan            # the laptop's name on the network: ethunaivan.local
+LAN_NAME="$NAME.local"
 
 say "Installing system packages"
 apt-get update
-apt-get install -y ca-certificates curl gnupg rsync xz-utils postgresql-common
+apt-get install -y ca-certificates curl gnupg rsync xz-utils openssl postgresql-common avahi-daemon libnss-mdns
 
 say "Installing PostgreSQL 18"
 /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
@@ -36,20 +48,32 @@ if ! /usr/local/bin/node -v 2>/dev/null | grep -q '^v24\.'; then
   ln -sf /opt/node/bin/node /opt/node/bin/npm /opt/node/bin/npx /usr/local/bin/
 fi
 
-say "Installing cloudflared"
-mkdir -p --mode=0755 /usr/share/keyrings
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
-echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' > /etc/apt/sources.list.d/cloudflared.list
-apt-get update
-apt-get install -y cloudflared
+if [ "$TUNNEL" = yes ]; then
+  say "Installing cloudflared"
+  mkdir -p --mode=0755 /usr/share/keyrings
+  curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+  echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' > /etc/apt/sources.list.d/cloudflared.list
+  apt-get update
+  apt-get install -y cloudflared
+fi
+
+say "Naming the laptop $LAN_NAME on the network"
+if [ "$(hostnamectl --static 2>/dev/null || hostname)" != "$NAME" ]; then
+  hostnamectl set-hostname "$NAME"
+fi
+if grep -q '^127\.0\.1\.1' /etc/hosts; then sed -i "s/^127\.0\.1\.1.*/127.0.1.1 $NAME/" /etc/hosts; else echo "127.0.1.1 $NAME" >> /etc/hosts; fi
+systemctl enable --now avahi-daemon
+systemctl restart avahi-daemon
 
 say "Copying the site to $APP"
 id crm >/dev/null 2>&1 || useradd --system --home-dir "$APP" --shell /usr/sbin/nologin crm
 mkdir -p "$APP"
-rsync -a --delete --exclude=/.env --exclude=/backups --exclude=/node_modules --exclude=/dist --exclude=/deploy-data ./ "$APP"/
-mkdir -p "$APP/backups"
+rsync -a --delete --exclude=/.env --exclude=/backups --exclude=/node_modules --exclude=/dist --exclude=/deploy-data --exclude=/data ./ "$APP"/
+mkdir -p "$APP/backups" "$APP/data"
+# The UPI QR image for subscriptions, if one was packed.
+if [ -f deploy-data/upi-qr.png ]; then install -m 640 deploy-data/upi-qr.png "$APP/data/upi-qr.png"; fi
 chown -R crm:crm "$APP"
-chmod 750 "$APP" "$APP/backups"
+chmod 750 "$APP" "$APP/backups" "$APP/data"
 [ -z "$OWNER" ] || usermod -aG crm "$OWNER"
 
 set_env() { # name value
@@ -68,16 +92,31 @@ if [ ! -f "$APP/.env" ]; then
   sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'crm'" | grep -q 1 || sudo -u postgres createdb -O crm crm
   install -o crm -g crm -m 600 "$APP/.env.example" "$APP/.env"
   set_env DATABASE_URL "postgres://crm:$password@localhost:5432/crm"
-  set_env COOKIE_SECURE on
-  set_env BEHIND_TUNNEL on
-  set_env HOST 127.0.0.1
 fi
+
+# On the network: every device on the Wi-Fi can open it, on the normal web ports.
+# The phone app uses plain http on the shop Wi-Fi; browsers use https.
+sed -i '/^HOST=/d' "$APP/.env"
+set_env PORT 80
+set_env HTTPS_PORT 443
+set_env LAN_NAME "$LAN_NAME"
+set_env COOKIE_SECURE off
+set_env BEHIND_TUNNEL "$([ "$TUNNEL" = yes ] && echo on || echo off)"
+grep -q '^APP_URL=https://.*trycloudflare' "$APP/.env" || set_env APP_URL "https://$LAN_NAME"
 
 if ! grep -Eq '^AADHAAR_KEY=[0-9a-fA-F]{64}$' "$APP/.env"; then
   aadhaar_key=$(cat deploy-data/aadhaar.key 2>/dev/null || true)
   [ -n "$aadhaar_key" ] || aadhaar_key=$(openssl rand -hex 32)
   set_env AADHAAR_KEY "$aadhaar_key"
 fi
+# Keep the UPI details from the main computer, if they were packed.
+if [ -f deploy-data/upi.env ]; then
+  while IFS='=' read -r key value; do
+    case "$key" in UPI_ID|UPI_NAME|GSTIN) [ -n "$value" ] && set_env "$key" "$value" ;; esac
+  done < deploy-data/upi.env
+fi
+chown crm:crm "$APP/.env"
+chmod 600 "$APP/.env"
 
 tables=$(sudo -u postgres psql -d crm -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
 if [ -f deploy-data/crm.sql ] && [ "$tables" = 0 ]; then
@@ -93,6 +132,15 @@ fi
 say "Building the website"
 sudo -u crm -H bash -c "cd $APP && PATH=/usr/local/bin:\$PATH npm ci && PATH=/usr/local/bin:\$PATH npm run build"
 
+say "Making the HTTPS certificate for $LAN_NAME"
+sudo -u crm -H bash -c "cd $APP && /usr/local/bin/node create-https-cert.js"
+
+if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then
+  say "Opening the web ports in the firewall"
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+fi
+
 say "Keeping the laptop awake and on Indian time"
 timedatectl set-timezone Asia/Kolkata
 mkdir -p /etc/systemd/logind.conf.d
@@ -105,19 +153,28 @@ CONF
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 systemctl restart systemd-logind
 
-say "Starting the site, the tunnel and nightly backups"
-install -m 644 "$APP"/deploy/laptop/crm.service "$APP"/deploy/laptop/crm-tunnel.service \
-  "$APP"/deploy/laptop/crm-backup.service "$APP"/deploy/laptop/crm-backup.timer /etc/systemd/system/
-install -m 755 "$APP/deploy/laptop/crm-link.sh" /usr/local/bin/crm-link
+say "Starting the site and nightly backups"
+install -m 644 "$APP"/deploy/laptop/crm.service "$APP"/deploy/laptop/crm-backup.service "$APP"/deploy/laptop/crm-backup.timer /etc/systemd/system/
+install -m 755 "$APP/deploy/laptop/crm-address.sh" /usr/local/bin/crm-address
+if [ "$TUNNEL" = yes ]; then
+  install -m 644 "$APP"/deploy/laptop/crm-tunnel.service /etc/systemd/system/
+  install -m 755 "$APP/deploy/laptop/crm-link.sh" /usr/local/bin/crm-link
+fi
 systemctl daemon-reload
-systemctl enable crm crm-tunnel crm-backup.timer
+systemctl enable crm crm-backup.timer
 systemctl restart crm
-systemctl restart crm-tunnel
 systemctl start crm-backup.timer
+if [ "$TUNNEL" = yes ]; then
+  systemctl enable crm-tunnel
+  systemctl restart crm-tunnel
+elif systemctl list-unit-files crm-tunnel.service >/dev/null 2>&1; then
+  systemctl disable --now crm-tunnel 2>/dev/null || true
+fi
 
 say "Done"
-sleep 15
-systemctl is-active crm crm-tunnel || true
-crm-link || true
+sleep 8
+systemctl is-active crm || { echo "The site did not start. See: sudo journalctl -u crm -n 50"; exit 1; }
+crm-address
+if [ "$TUNNEL" = yes ]; then echo; echo "Link for shops outside your network (wait a minute):"; crm-link || true; fi
 echo
 echo "Next, follow part 5 of deploy/LAPTOP_SETUP.md."

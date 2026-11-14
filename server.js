@@ -2,6 +2,7 @@
 // Each status source (certificate, smart card, voter, ...) is a provider in ./providers.
 require('./lib/env'); // settings from .env
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { byId, publicList, isValidNumber } = require('./providers');
@@ -18,6 +19,12 @@ const ttdApi = require('./lib/ttd-api');
 const ttd = require('./lib/ttd');
 const activity = require('./lib/activity');
 const mail = require('./lib/mail');
+const money = require('./lib/money');
+const followups = require('./lib/followups');
+const renewals = require('./lib/renewals');
+const monthly = require('./lib/monthly');
+const plans = require('./lib/plans');
+const cases = require('./lib/cases');
 
 const PORT = process.env.PORT || 3000;
 
@@ -82,13 +89,17 @@ async function lookup(provider, number) {
   }
 }
 
+// Government pages sometimes pad text with long runs of dots or dashes
+// ("Recommended ........"). Those runs are dropped, and the spaces tidied.
+const tidyText = text => String(text || '').replace(/([.\-_=*~·…])\1{3,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
+
 async function refreshCustomer(c) {
   const provider = byId[c.type];
   if (!provider) throw new Error(`Unknown service type "${c.type}"`);
   const r = await lookup(provider, c.applicationNo);
   setStatus(c, r.found ? r.status : r.message, r.found);
-  c.service = r.title || c.service || '';
-  c.remarks = r.remarks || '';
+  c.service = tidyText(r.title) || c.service || '';
+  c.remarks = tidyText(r.remarks);
   return c;
 }
 
@@ -109,6 +120,7 @@ const wasSent = (c, status) => (c.notifications || []).some(n => n.ok && ['live'
 // False when no PAN customer of this user has the number.
 const PAN_STEPS = { Submitted: 1, 'In Process': 2, Approved: 3 };
 async function panEmail(owner, number, stage, note, date) {
+  if (!plans.allows(await users.planOf(owner), 'epan')) return false; // e-PAN email reading is Premium
   const found = (await db.query("SELECT id FROM customers WHERE owner = $1 AND type = 'pan' AND application_no = $2", [owner, number])).rows[0];
   if (!found) return false;
   const customer = await customers.find(found.id);
@@ -136,7 +148,14 @@ async function refreshAndSave(id, actor) {
   if (!await customers.saveStatus(customer)) return null; // deleted while checking
   if (customer.status !== before) await activity.log({ actor, action: 'customer.status', owner: customer.owner, detail: `${customer.name} (${customer.applicationNo}): ${customer.status}` });
   // Not on the very first check (that's the starting point), and not for "not found".
-  if (wasChecked && customer.found && customer.status !== before) await notifyCustomer(customer);
+  if (wasChecked && customer.found && customer.status !== before) {
+    // Messages sent by the WhatsApp API on their own are Premium. Other shops send
+    // them from their own WhatsApp with one click, so the customer waits in that list.
+    if (whatsapp.mode() === 'live' && !plans.allows(await users.planOf(customer.owner), 'autoWhatsapp')) {
+      customer.notifyDue = !customer.informed && !wasSent(customer, customer.status);
+      await customers.saveStatus(customer);
+    } else await notifyCustomer(customer);
+  }
   return customer;
 }
 
@@ -198,7 +217,7 @@ async function runAllChecks(trigger, onlyOwner) {
     console.log(`[auto-check] ${trigger}: checking ${due.length} customers one by one`);
 
     for (const [i, { id, owner }] of due.entries()) {
-      if (await users.isActive(owner)) {
+      if (await users.isActive(owner) && plans.canChange(await users.planOf(owner))) {
         const run = runs[owner];
         try {
           const c = await refreshAndSave(id);
@@ -233,6 +252,113 @@ setInterval(async () => {
     console.error('[auto-check]', e.message);
   }
 }, 30000);
+
+// /api/plan: where the shop stands, what it would pay, "I have paid", receipts.
+async function planApi(req, res, url, user) {
+  const [, , , section, id, action] = url.pathname.split('/');
+  const fresh = await users.planOf(user.id);
+  if (req.method === 'GET' && !section) {
+    return send(res, 200, {
+      ...plans.status(fresh), prices: plans.PRICES, premium: plans.PREMIUM, graceDays: plans.GRACE_DAYS, upi: plans.upi(),
+      payments: await plans.paymentsOf(user.id),
+      quotes: {
+        standard: { monthly: plans.quote(fresh, { plan: 'standard', billing: 'monthly' }), yearly: plans.quote(fresh, { plan: 'standard', billing: 'yearly' }) },
+        premium: { monthly: plans.quote(fresh, { plan: 'premium', billing: 'monthly' }), yearly: plans.quote(fresh, { plan: 'premium', billing: 'yearly' }) },
+        upgrade: plans.quote(fresh, { kind: 'upgrade' }),
+      },
+    });
+  }
+  if (req.method === 'GET' && section === 'qr') {
+    const file = plans.qrFile();
+    if (!file) return send(res, 404, { error: 'No QR code saved yet' });
+    res.writeHead(200, { 'Content-Type': file.endsWith('.png') ? 'image/png' : 'image/jpeg', 'Cache-Control': 'no-store' });
+    return fs.createReadStream(file).pipe(res);
+  }
+  if (req.method === 'GET' && section === 'receipt' && /^[0-9]{1,18}$/.test(id || '')) {
+    const html = await plans.receipt(id, user.id);
+    if (!html) return send(res, 404, { error: 'Receipt not found' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(html);
+  }
+  if (req.method === 'POST' && section === 'pay') {
+    const key = `plan-pay|${user.id}`;
+    if (users.limited(key, 10)) return send(res, 429, { error: 'Too many tries. Wait an hour and try again.' });
+    users.countTry(key, 60 * 60 * 1000);
+    const result = await plans.requestPayment(fresh, await readBody(req));
+    if (result.error) return send(res, result.code || 400, { error: result.error });
+    await activity.log({ actor: user, action: 'plan.pay', owner: user.id });
+    return send(res, 201, result);
+  }
+  if (req.method === 'POST' && section === 'cancel' && /^[0-9]{1,18}$/.test(id || '')) {
+    if (!await plans.cancelPayment(user.id, id)) return send(res, 409, { error: 'This payment is not waiting any more' });
+    return send(res, 200, { ok: true });
+  }
+  void action;
+  return send(res, 404, { error: 'Not found' });
+}
+
+// Plan reminders in the shop inboxes, checked twice an hour.
+setInterval(async () => {
+  try {
+    const shops = (await users.forAdmin()).filter(u => u.status === 'active');
+    await plans.sendReminders(shops);
+  } catch (e) {
+    console.error('[plan reminders]', e.message);
+  }
+}, 30 * 60 * 1000);
+
+// Sends a month's report to the shop's own email address, by hand from /report.
+async function emailReport(req, res, user) {
+  const body = await readBody(req);
+  const ym = monthly.validMonth(body.month) ? body.month : monthly.lastMonth();
+  const email = (await users.profile(user.id))?.email;
+  if (!email) return send(res, 400, { error: 'Add an email address to your profile first' });
+  const key = `report|${user.id}`;
+  if (users.limited(key, 5)) return send(res, 429, { error: 'Too many tries. Wait an hour and try again.' });
+  users.countTry(key, 60 * 60 * 1000);
+  const report = await monthly.build(user.id, ym);
+  try {
+    await mail.sendReport(email, `eThunaivan report: ${monthly.monthName(ym)}`, monthly.text(report, user.userId));
+  } catch (e) {
+    console.error('[report email]', e.message);
+    return send(res, 502, { error: 'The email could not be sent. Please try again later.' });
+  }
+  await activity.log({ actor: user, action: 'report.email', owner: user.id, detail: monthly.monthName(ym) });
+  return send(res, 200, { ok: true, email });
+}
+
+// On the 1st of each month at 08:00 (India time), last month's report goes to every
+// active shop with an email address. Each shop and month is sent once.
+async function sendMonthlyReports() {
+  const ym = monthly.lastMonth();
+  const { rows } = await db.query(
+    `SELECT u.id, u.user_id, u.email FROM users u WHERE u.role = 'user' AND u.status = 'active' AND u.email IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM monthly_sent m WHERE m.owner = u.id AND m.month = $1)`,
+    [ym],
+  );
+  for (const u of rows) {
+    let error = null;
+    try {
+      const report = await monthly.build(u.id, ym);
+      await mail.sendReport(u.email, `eThunaivan report: ${monthly.monthName(ym)}`, monthly.text(report, u.user_id));
+    } catch (e) {
+      error = e.message.slice(0, 300);
+      console.error(`[monthly report] ${u.user_id}: ${error}`);
+    }
+    await db.query('INSERT INTO monthly_sent (owner, month, ok, error) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING', [u.id, ym, !error, error]);
+    await new Promise(r => setTimeout(r, 3000)); // one at a time
+  }
+  if (rows.length) console.log(`[monthly report] ${ym}: ${rows.length} shops`);
+}
+
+let sendingReports = false;
+setInterval(() => {
+  const { date, time } = istNow();
+  if (date.endsWith('-01') && time >= (process.env.REPORT_TIME || '08:00') && !sendingReports) {
+    sendingReports = true;
+    sendMonthlyReports().catch(e => console.error('[monthly report]', e.message)).finally(() => { sendingReports = false; });
+  }
+}, 60000);
 
 // Every action here works only on the signed-in user's own customers.
 async function customersApi(req, res, url, user) {
@@ -299,6 +425,19 @@ async function customersApi(req, res, url, user) {
     if (twin) throw httpError(409, `${applicationNo} is already saved for ${twin.name} under ${byId[twin.type]?.name || twin.type}`);
   }
 
+  // Paid or not paid, and the optional amounts: the fee, and "paid now" saved as
+  // the first payment.
+  function feeDetails() {
+    const payment = ['paid', 'unpaid'].includes(body.payment) ? body.payment : null;
+    const fee = body.fee === undefined || body.fee === null || body.fee === '' ? null : money.rupees(body.fee);
+    if (fee === null && body.fee !== undefined && body.fee !== null && body.fee !== '') throw httpError(400, 'Enter the fee in whole rupees');
+    const paid = body.paidNow === undefined || body.paidNow === null || body.paidNow === '' ? 0 : money.rupees(body.paidNow);
+    if (paid === null) throw httpError(400, 'Enter the amount paid in whole rupees');
+    if (!paid) return { fee, payment, pay: null };
+    if (!['cash', 'upi'].includes(body.payMode)) throw httpError(400, 'Choose Cash or UPI');
+    return { fee, payment, pay: { amount: paid, mode: body.payMode } };
+  }
+
   async function chosenOperator() {
     const operatorId = String(body.operatorId || '');
     if (!operatorId) return null;
@@ -316,9 +455,16 @@ async function customersApi(req, res, url, user) {
     await refuseDuplicate(applicationNo);
     const operatorId = await chosenOperator();
     const newId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const customer = await customers.add({ id: newId, owner: user.id, type: provider.id, name, applicationNo, whatsapp: whatsappNo, operatorId, panAgency, ...dateDetails(provider.id, true), ...aadhaarFields(newId, aadhaarNo) });
+    const { fee, payment, pay } = feeDetails();
+    const customer = await customers.add({ id: newId, owner: user.id, type: provider.id, name, applicationNo, whatsapp: whatsappNo, operatorId, panAgency, fee, payment, ...dateDetails(provider.id, true), ...aadhaarFields(newId, aadhaarNo) });
     if (!customer) return send(res, 409, { error: `${applicationNo} is already saved under ${provider.name}` });
     await record('customer.add', label(customer));
+    if (pay) {
+      const t = await money.target(user.id, { customerId: customer.id });
+      await money.addPayment(user.id, t, { ...pay, operatorId, by: user.userId });
+      await record('money.paid', `${label(customer)}: ₹${pay.amount} ${pay.mode === 'upi' ? 'UPI' : 'cash'}`);
+      return send(res, 201, await customers.find(customer.id));
+    }
     return send(res, 201, customer);
   }
 
@@ -487,7 +633,7 @@ const isDate = text => {
   return d.getUTCDate() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1;
 };
 
-const publicUser = u => ({ userId: u.userId, role: u.role, app: u.app || null });
+const publicUser = u => ({ userId: u.userId, role: u.role, app: u.app || null, plan: u.role === 'user' ? plans.status(u) : null });
 
 // Through a tunnel every visitor arrives from this computer, and Cloudflare names
 // the real one. Only trusted when the request really came from the local tunnel.
@@ -672,8 +818,37 @@ async function adminApi(req, res, url, admin) {
     }
     return send(res, 404, { error: 'Not found' });
   }
+  if (section === 'billing' && req.method === 'GET') {
+    const shops = (await users.forAdmin()).map(u => ({ ...u, plan: plans.status(u) }));
+    return send(res, 200, await plans.billing(shops));
+  }
+  if (section === 'payments' && /^[0-9]{1,18}$/.test(id || '')) {
+    if (req.method === 'GET' && action === 'receipt') {
+      const html = await plans.receipt(id, null);
+      if (!html) return send(res, 404, { error: 'Receipt not found' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(html);
+    }
+    if (req.method !== 'POST') return send(res, 405, { error: 'Not allowed' });
+    const body = await readBody(req);
+    const result = action === 'confirm' ? await plans.confirmPayment(id, admin.userId)
+      : action === 'reject' ? await plans.rejectPayment(id, admin.userId, String(body.note || '').trim().slice(0, 200))
+        : { error: 'Not found', code: 404 };
+    if (result.error) return send(res, result.code || 400, { error: result.error });
+    await activity.log({ actor: admin, action: `plan.payment-${action}`, target: await users.userIdOf(result.owner), detail: result.receipt || null });
+    return send(res, 200, result);
+  }
   if (section !== 'users') return send(res, 404, { error: 'Not found' });
-  if (req.method === 'GET' && !id) return send(res, 200, await users.forAdmin());
+  if (req.method === 'GET' && !id) return send(res, 200, (await users.forAdmin()).map(u => ({ ...u, planState: plans.status(u) })));
+  if (req.method === 'POST' && id && ['plan', 'trial', 'payment'].includes(action)) {
+    const body = await readBody(req);
+    const result = action === 'plan' ? await plans.changePlan(id, admin.userId, body.plan)
+      : action === 'trial' ? await plans.extendTrial(id, admin.userId, body.days)
+        : await plans.recordPayment(id, admin.userId, body);
+    if (result.error) return send(res, result.code || 400, { error: result.error });
+    await activity.log({ actor: admin, action: `plan.${action}`, target: await users.userIdOf(id), detail: result.receipt || (body.plan || (body.days ? `${body.days} days` : null)) });
+    return send(res, 200, result);
+  }
   if (req.method !== 'POST') return send(res, 405, { error: 'Not allowed' });
   const body = await readBody(req);
   const target = id ? await users.userIdOf(id) : String(body.userId || '').trim().toLowerCase();
@@ -709,7 +884,7 @@ function sendPage(res, code) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>${title} - Sir Palaniyandavar Info Tech</title>
+<title>${title} - eThunaivan</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:#f3edde;color:#0b0f0d;font:400 16px/1.5 system-ui,sans-serif}
@@ -723,7 +898,7 @@ a{display:inline-block;padding:11px 20px;border-radius:8px;background:#1f2a1f;co
 </style>
 </head>
 <body>
-<header>Sir Palaniyandavar Info Tech</header>
+<header>eThunaivan</header>
 <main><section><b>${code}</b><h1>${title}</h1><p>${message}</p><a href="/">Go to home page</a></section></main>
 </body>
 </html>
@@ -731,7 +906,7 @@ a{display:inline-block;padding:11px 20px;border-radius:8px;background:#1f2a1f;co
 }
 
 // Pages the React site handles; everything else must be a real file in dist.
-const SITE_PAGES = ['/', '/home', '/operators', '/tnpds', '/voter', '/aadhaar', '/pan', '/pan/uti', '/pan/nsdl', '/login', '/register', '/forgot', '/reset', '/status', '/activity', '/reports', '/profile', '/admin', '/admin/activity', '/admin/reports', '/admin/profile', '/admin/notices', '/calls', '/ttd', '/ttd/book'];
+const SITE_PAGES = ['/', '/home', '/aadhaar/name', '/plan', '/admin/billing', '/followups', '/dues', '/renewals', '/report', '/operators', '/tnpds', '/voter', '/aadhaar', '/pan', '/pan/uti', '/pan/nsdl', '/login', '/register', '/forgot', '/reset', '/status', '/activity', '/reports', '/profile', '/admin', '/admin/activity', '/admin/reports', '/admin/profile', '/admin/notices', '/calls', '/ttd', '/ttd/book'];
 
 function serveStatic(req, res, pathname) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -782,7 +957,7 @@ function fromOtherSite(req) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
+async function handle(req, res) {
   let url;
   try {
     url = new URL(req.url, 'http://localhost');
@@ -803,6 +978,7 @@ const server = http.createServer(async (req, res) => {
       // so its session can't reach anything else, whoever sends the request.
       if (user.app === 'calls') {
         if (user.role !== 'user') return send(res, 403, { error: 'The admin account has no customers' });
+        if (!plans.allows(user, 'calls')) return send(res, 402, { error: 'The phone app is part of the Premium plan. Renew or upgrade on the website, under My plan.', code: 'premium' });
         if (url.pathname === '/api/providers' && req.method === 'GET') return send(res, 200, publicList());
         if (url.pathname === '/api/calls' || url.pathname.startsWith('/api/calls/')) return await callsApi(req, res, url, user);
         return send(res, 403, { error: 'The phone app can only show lists. Use the website for this.' });
@@ -815,6 +991,24 @@ const server = http.createServer(async (req, res) => {
       if (user.role !== 'user') return send(res, 403, { error: 'The admin account has no customers' });
 
       if (url.pathname === '/api/providers') return send(res, 200, publicList());
+
+      // The shop's plan, and paying for it. These work even when the plan has ended.
+      if (url.pathname === '/api/plan' || url.pathname.startsWith('/api/plan/')) return await planApi(req, res, url, user);
+      // A plan that has ended leaves the site read-only: looking, searching and CSV work,
+      // changes don't. Premium parts need Premium. The server decides, not the buttons.
+      const writing = req.method !== 'GET';
+      if (writing && !plans.canChange(user) && url.pathname !== '/api/inbox/read') {
+        return send(res, 402, { error: 'Your plan has ended. Renew under My plan to continue. Nothing has been deleted.', code: 'readonly' });
+      }
+      if ((url.pathname === '/api/calls' || url.pathname.startsWith('/api/calls/')) && !plans.allows(user, 'calls')) {
+        return send(res, 402, { error: 'The phone list is part of the Premium plan.', code: 'premium' });
+      }
+      if ((url.pathname === '/api/ttd' || url.pathname.startsWith('/api/ttd/')) && writing && !plans.allows(user, 'ttd')) {
+        return send(res, 402, { error: 'The TTD booking helper is part of the Premium plan. Your saved bookings can still be seen.', code: 'premium' });
+      }
+      if (writing && whatsapp.mode() === 'live' && !plans.allows(user, 'autoWhatsapp') && (url.pathname === '/api/customers/send-updates' || /^\/api\/customers\/[^/]+\/notify$/.test(url.pathname))) {
+        return send(res, 402, { error: 'Sending through the WhatsApp API is part of the Premium plan. Use Send on WhatsApp instead.', code: 'premium' });
+      }
       // The shop's notice inbox: news, updates and price changes from the admin.
       if (url.pathname === '/api/inbox' && req.method === 'GET') return send(res, 200, await notices.forUser(user.id));
       if (url.pathname === '/api/inbox/read' && req.method === 'POST') {
@@ -825,11 +1019,39 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/api/activity') return send(res, 200, await activity.forUser(user.id, Number(url.searchParams.get('page'))));
       if (url.pathname === '/api/reports') return send(res, 200, await customers.report(user.id));
       if (url.pathname === '/api/reports/operators') return send(res, 200, await customers.operatorReport(user.id));
-      if (url.pathname === '/api/nav-counts') return send(res, 200, await customers.navCounts(user.id));
+      if (url.pathname === '/api/nav-counts') {
+        const counts = await customers.navCounts(user.id);
+        const owed = await money.dues(user.id);
+        counts['/followups'] = { n: await followups.dueCount(user.id), due: 0 };
+        counts['/dues'] = { n: owed.length, due: 0 };
+        counts['/renewals'] = { n: await renewals.dueCount(user.id), due: 0 };
+        const nc = await cases.counts(user.id);
+        counts['/aadhaar/name'] = { n: nc.open, due: 0 };
+        return send(res, 200, counts);
+      }
       if (url.pathname === '/api/dashboard') {
         const recent = (await activity.forUser(user.id, 1)).items.slice(0, 6);
-        return send(res, 200, { ...await customers.dashboard(user.id), recent, ttd: await ttd.summary(user.id) });
+        return send(res, 200, {
+          ...await customers.dashboard(user.id), recent, ttd: await ttd.summary(user.id),
+          money: await money.today(user.id), followUps: (await followups.list(user.id)).due, renewalsDue: await renewals.dueCount(user.id),
+          nameChanges: await cases.counts(user.id),
+        });
       }
+      const helpers = { send, readBody, httpError, activity, operators };
+      if (url.pathname.startsWith('/api/money/')) return await money.moneyApi(req, res, url, user, helpers);
+      if (url.pathname === '/api/followups' || url.pathname.startsWith('/api/followups/')) return await followups.followupsApi(req, res, url, user, helpers);
+      if (url.pathname === '/api/renewals' || url.pathname.startsWith('/api/renewals/')) return await renewals.renewalsApi(req, res, url, user, helpers);
+      if (url.pathname === '/api/cases' || url.pathname.startsWith('/api/cases/')) {
+        return await cases.casesApi(req, res, url, user, { ...helpers, normalizeWhatsapp, customers, byId, isValidNumber, users });
+      }
+      if (url.pathname === '/api/report' && req.method === 'GET') {
+        const ym = url.searchParams.get('month') || monthly.lastMonth();
+        if (!monthly.validMonth(ym)) return send(res, 400, { error: 'Choose a month' });
+        const report = await monthly.build(user.id, ym);
+        const me = await users.profile(user.id);
+        return send(res, 200, { ...report, text: monthly.text(report, user.userId), email: me?.email || null, phone: me?.phone || null });
+      }
+      if (url.pathname === '/api/report/email' && req.method === 'POST') return await emailReport(req, res, user);
 
       // /api/status?type=certificate&no=TN-...  (type defaults to certificate)
       if (url.pathname === '/api/status') {
@@ -847,7 +1069,7 @@ const server = http.createServer(async (req, res) => {
           if (started) runAllChecks('Manual', user.id).catch(e => console.error('[auto-check]', e.message));
           return send(res, started ? 202 : 409, started ? { ok: true } : { error: 'A check is already running' });
         }
-        return send(res, 200, { times: CHECK_TIMES, timezone: TZ, gapSeconds: GAP_MS / 1000, nextRun: nextRunLabel(), running: progress?.owners[user.id] || null, lastRun: await customers.lastRun(user.id), whatsapp: whatsapp.mode(), epan: epan.status() });
+        return send(res, 200, { times: CHECK_TIMES, timezone: TZ, gapSeconds: GAP_MS / 1000, nextRun: nextRunLabel(), running: progress?.owners[user.id] || null, lastRun: await customers.lastRun(user.id), whatsapp: whatsapp.mode() === 'live' && !plans.allows(user, 'autoWhatsapp') ? 'manual' : whatsapp.mode(), epan: plans.allows(user, 'epan') ? epan.status() : { on: false, premium: true } });
       }
 
       if (url.pathname === '/api/reset-data' && req.method === 'POST') return await resetData(req, res, user);
@@ -879,11 +1101,36 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
     return res.end('{"app":"sp-crm"}');
   }
+  // The shop's own certificate authority, so phones and computers on the network can
+  // trust https://ethunaivan.local once. It is public: it can't log in or read anything.
+  if (url.pathname === '/ethunaivan-ca.crt' && req.method === 'GET') {
+    const file = path.join(CERT_DIR, 'ca.crt');
+    if (!fs.existsSync(file)) return sendPage(res, 404);
+    res.writeHead(200, { 'Content-Type': 'application/x-x509-ca-cert', 'Content-Disposition': 'attachment; filename="ethunaivan-ca.crt"', 'Cache-Control': 'no-store' });
+    return fs.createReadStream(file).pipe(res);
+  }
   if (url.pathname === '/sitemap.xml') return sitemap(res);
   if (url.pathname === '/robots.txt') return robots(res);
 
   serveStatic(req, res, url.pathname);
-});
+}
+
+const server = http.createServer(handle);
+
+// HTTPS as well, once `node create-https-cert.js` has made a certificate.
+// Plain http stays on PORT for the phone app and the tunnel.
+const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
+const CERT_DIR = path.join(__dirname, 'data', 'https');
+function httpsServer() {
+  if (process.env.HTTPS === 'off') return null;
+  try {
+    const key = fs.readFileSync(path.join(CERT_DIR, 'server.key'));
+    const cert = fs.readFileSync(path.join(CERT_DIR, 'server.crt'));
+    return https.createServer({ key, cert }, handle);
+  } catch {
+    return null; // no certificate yet
+  }
+}
 
 // This computer's addresses on the local network.
 function networkAddresses() {
@@ -895,8 +1142,20 @@ process.on('unhandledRejection', e => console.error('[unexpected]', e));
 
 db.setup().then(() => {
   server.listen(PORT, process.env.HOST || undefined, async () => {
-    console.log(`CRM running at http://localhost:${PORT}`);
-    if (!process.env.HOST) for (const address of networkAddresses()) console.log(`Other devices on your network: http://${address}:${PORT}`);
+    const at = (scheme, host, port) => `${scheme}://${host}${(scheme === 'http' && String(port) === '80') || (scheme === 'https' && String(port) === '443') ? '' : `:${port}`}`;
+    console.log(`CRM running at ${at('http', 'localhost', PORT)}`);
+    if (!process.env.HOST) for (const address of networkAddresses()) console.log(`Other devices on your network: ${at('http', address, PORT)}`);
+    const secure = httpsServer();
+    if (secure) {
+      secure.on('error', e => console.error(`HTTPS could not start: ${e.message}`));
+      secure.listen(HTTPS_PORT, process.env.HOST || undefined, () => {
+        console.log(`Secure (HTTPS): ${at('https', 'localhost', HTTPS_PORT)}`);
+        if (!process.env.HOST) for (const address of networkAddresses()) console.log(`Secure on your network: ${at('https', address, HTTPS_PORT)}`);
+        if (process.env.LAN_NAME) console.log(`By name on your network: ${at('https', process.env.LAN_NAME, HTTPS_PORT)}`);
+      });
+    } else if (process.env.HTTPS !== 'off') {
+      console.log('For HTTPS, run: node create-https-cert.js');
+    }
     if (!await users.hasAdmin()) console.log('No admin yet. Create one with: node create-admin.js');
     if (!fs.existsSync(path.join(PUBLIC, 'index.html'))) console.log('The website is not built yet. Run: npm run build');
     if (epan.start(panEmail)) console.log('Reading e-PAN emails every few minutes');

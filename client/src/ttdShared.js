@@ -33,3 +33,30 @@ export function ticketMessage(b) {
 export const ticketLink = b => `https://wa.me/${b.whatsapp}?text=${encodeURIComponent(ticketMessage(b))}`;
 
 export const groupName = b => (b.pilgrims.length > 1 ? `${b.pilgrims[0]?.name} +${b.pilgrims.length - 1}` : b.pilgrims[0]?.name || '');
+
+// Opens booking mode in a small window. Where the browser allows it
+// (Chrome, Brave and Edge 116 and later) the window is pinned on top of
+// every other window, so it stays visible over the TTD site. Other browsers
+// get a normal pop-up window.
+export async function openSideWindow() {
+  const url = '/ttd/book?side=1';
+  const pip = window.documentPictureInPicture;
+  if (pip && window.isSecureContext !== false) {
+    try {
+      if (pip.window) { pip.window.focus(); return; }
+      const win = await pip.requestWindow({ width: 470, height: 860 });
+      const doc = win.document;
+      doc.title = 'Booking mode - TTD';
+      doc.body.style.cssText = 'margin:0;height:100vh;background:#f3ecdf';
+      const frame = doc.createElement('iframe');
+      frame.src = url;
+      frame.title = 'Booking mode';
+      frame.allow = 'clipboard-read; clipboard-write';
+      frame.style.cssText = 'border:0;width:100%;height:100%;display:block';
+      frame.addEventListener('load', () => { try { frame.contentWindow.focus(); } catch { /* not focused */ } });
+      doc.body.append(frame);
+      return;
+    } catch { /* fall back to a normal window */ }
+  }
+  window.open(url, 'ttd-book', 'popup,width=470,height=900');
+}
